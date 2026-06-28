@@ -1,6 +1,5 @@
-package com.github.tkirino.gobanreader.ui
+package com.github.tkirino.gobanreader
 
-import kotlinx.serialization.Serializable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -8,7 +7,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.github.tkirino.gobanreader.ReaderViewModel
+import com.github.tkirino.gobanreader.camera.CameraScreen
+import com.github.tkirino.gobanreader.display.DisplayScreen
+import com.github.tkirino.gobanreader.setting.SettingScreen
+import kotlinx.serialization.Serializable
 
 // 対局情報入力画面　ーーーーーーーーー＞　カメラ撮影・画像選択画面
 // (Settings)     onGetGobanClick   (GobanReader)
@@ -25,7 +27,7 @@ import com.github.tkirino.gobanreader.ReaderViewModel
 
 @Composable
 fun App() {
-    val readerViewModel: ReaderViewModel = viewModel() // valが必要、末尾の)は不要
+    val readerViewModel: MainViewModel = viewModel()
     val readerUiState by readerViewModel.uiState.collectAsState()
 
     val navController = rememberNavController()
@@ -39,25 +41,26 @@ fun App() {
                 onBlackPlayerChanged = { name -> readerViewModel.updateBlackPlayer(name) },
                 onWhitePlayerChanged = { name -> readerViewModel.updateWhitePlayer(name) },
                 onGetGobanClick = {
-                   navController.navigate(Route.GobanReader)
+                    navController.navigate(Route.Camera)
                 },
                 onHistoryClick = {
-                   navController.navigate(Route.History)
+                    navController.navigate(Route.History)
                 }
             )
         }
-        composable<Route.GobanReader> {
-            GobanReaderScreen(
+        composable<Route.Camera> {
+            CameraScreen(
                 onStartReadingClick = {
-                    navController.navigate(Route.ReadResult)
+                    navController.navigate(Route.Display)
                 },
                 onBackClick = {
                     navController.navigate(Route.Settings)
                 }
             )
         }
-        composable<Route.ReadResult> {
-            ReadResultScreen(
+        composable<Route.Display> {
+            DisplayScreen(
+                readerViewModel,
                 onBackClick = {
                     navController.navigate(Route.Settings)
                 }
@@ -72,7 +75,7 @@ object Route {
     @Serializable
     data object History
     @Serializable
-    data object GobanReader
+    data object Camera
     @Serializable
-    data object ReadResult
+    data object Display
 }

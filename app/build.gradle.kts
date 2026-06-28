@@ -18,6 +18,10 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+    
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -61,4 +65,23 @@ dependencies {
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+
+    val cameraxVersion = "1.3.4" // 安定版のバージョン
+    implementation("androidx.camera:camera-core:$cameraxVersion")
+    implementation("androidx.camera:camera-camera2:$cameraxVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
+    implementation("androidx.camera:camera-view:$cameraxVersion")
+
+    // これを追加
+    implementation(libs.accompanist.permissions)
+
+    // CameraX 関係（これらは既に入っているはずですが確認してください）
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+
+    // ★この1行を追加するだけでOpenCVが使えるようになります！
+    implementation("org.opencv:opencv:4.10.0")
 }
+
