@@ -37,41 +37,97 @@ class GuidedBoardDetector(
         val corners = detectCorners(srcMat, guide) ?: return null
         val warped = warpBoard(srcMat, corners)
 
-        // 判定処理：V(輝度)とS(彩度)を確認するためのログ出力
+        // 1. まず交差点リストを作成する（これより前には置けません）
         val intersections = getIntersectionPoints(Size(1000.0, 1073.0))
+
+        // 2. このリストを使って、まず平均輝度（AvgV）を計算する
+        val allV = mutableListOf<Double>()
         for (pt in intersections) {
+            val (v, _) = detectStoneAt(warped, pt.x, pt.y)
+            if (v != -1.0) allV.add(v)
+        }
+        val boardAvgV = if (allV.isNotEmpty()) allV.average() else 128.0
+        Log.d("BoardDebug", "--- AvgV: %.1f ---".format(boardAvgV))
+
+       // 3. 次にこの AvgV を使って判定しつつログを出す
+        for (pt in intersections) {
+            // process内の判定ループ修正案
             val (v, s) = detectStoneAt(warped, pt.x, pt.y)
-            if (v != -1.0) {
-                Log.d("BoardDebug", "Point(${pt.x.toInt()}, ${pt.y.toInt()}) V: ${"%.1f".format(v)}, S: ${"%.1f".format(s)}")
+            val type = when {
+                v == -2.0 -> "E" // ゲートで弾かれたら即E
+                v < 70 && s < 35 -> "B"
+                v > 150 && s < 60 -> "W"
+                else -> "E"
             }
+            Log.d("BoardDebug", "P(%3.0f,%3.0f) %s | V:%5.1f S:%5.1f".format(pt.x, pt.y, type, v, s))
         }
 
         return warped
     }
 
     private fun detectStoneAt(warped: Mat, cx: Double, cy: Double): Pair<Double, Double> {
-        val R = 12
-        val rect = Rect((cx - R).toInt(), (cy - R).toInt(), R * 2, R * 2)
+        val R = 18
 
-        if (rect.x < 0 || rect.y < 0 || rect.x + rect.width > warped.cols() || rect.y + rect.height > warped.rows()) {
-            return Pair(-1.0, -1.0)
+        // 1. 境界保護（クリッピング）：盤面の外にはみ出さないよう Rect を調整
+        val x1 = (cx - R).toInt().coerceAtLeast(0)
+        val y1 = (cy - R).toInt().coerceAtLeast(0)
+        val x2 = (cx + R).toInt().coerceAtMost(warped.cols())
+        val y2 = (cy + R).toInt().coerceAtMost(warped.rows())
+
+        // 範囲が狭すぎる（端すぎて円の判定ができない）場合は Empty 判定
+        if ((x2 - x1) < R || (y2 - y1) < R) {
+            return Pair(-2.0, -2.0)
         }
 
-        val roi = Mat(warped, rect)
+        val roi = Mat(warped, Rect(x1, y1, x2 - x1, y2 - y1))
+
+        // 2. 構造判定ゲート（強化版）
+        val gray = Mat()
+        Imgproc.cvtColor(roi, gray, Imgproc.COLOR_BGR2GRAY)
+        Imgproc.GaussianBlur(gray, gray, Size(5.0, 5.0), 0.0)
+
+        // 【改善点】Cannyの前に適応的な二値化を行うと、線が残りやすい
+        val binary = Mat()
+        Imgproc.adaptiveThreshold(gray, binary, 255.0,
+            Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C,
+            Imgproc.THRESH_BINARY_INV, 11, 2.0)
+
+        // 【改善点】モルフォロジー演算でエッジを太らせて繋げる
+        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
+        Imgproc.dilate(binary, binary, kernel) // 膨張処理で線を繋ぐ
+
+        val circles = Mat()
+        // HoughCirclesのパラメータを大幅緩和
+        // param1 (Canny): 30.0 -> 20.0
+        // param2 (投票数): 20.0 -> 8.0 (かなり緩く)
+        Imgproc.HoughCircles(binary, circles, Imgproc.HOUGH_GRADIENT, 1.0,
+            roi.rows().toDouble(), 20.0, 8.0, 10, 25)
+
+        if (circles.cols() == 0) {
+            roi.release()
+            gray.release()
+            circles.release()
+            return Pair(-2.0, -2.0) // 構造物なし＝Empty
+        }
+
+        // 3. 色判定アナライザー
         val hsvRoi = Mat()
         Imgproc.cvtColor(roi, hsvRoi, Imgproc.COLOR_BGR2HSV)
 
         val mask = Mat.zeros(roi.size(), CvType.CV_8U)
-        Imgproc.circle(mask, Point(R.toDouble(), R.toDouble()), R, Scalar(255.0), -1)
+        val c = circles.get(0, 0) // 検出された円を使用
+        Imgproc.circle(mask, Point(c[0], c[1]), c[2].toInt(), Scalar(255.0), -1)
 
         val mean = Core.mean(hsvRoi, mask)
 
+        // リソース解放
         roi.release()
+        gray.release()
         hsvRoi.release()
         mask.release()
+        circles.release()
 
-        // V: 明度(2), S: 彩度(1)
-        return Pair(mean.`val`[2], mean.`val`[1])
+        return Pair(mean.`val`[2], mean.`val`[1]) // V, S
     }
 
     // --- 以下、既存の関数は変更なし ---
@@ -131,15 +187,15 @@ class GuidedBoardDetector(
 
     fun getIntersectionPoints(warpedSize: Size): List<Point> {
         val points = mutableListOf<Point>()
-        val centerX = warpedSize.width / 2.0
-        val centerY = warpedSize.height / 2.0
-        val lineIntervalW = warpedSize.width / 18.0
-        val lineIntervalH = warpedSize.height / 18.0
-        for (i in -9..9) {
-            for (j in -9..9) {
-                points.add(Point(centerX + (i * lineIntervalW), centerY + (j * lineIntervalH)))
+        // 19路盤なので、0〜18の計19個の交点を配置する
+        val intervalW = warpedSize.width / 18.0
+        val intervalH = warpedSize.height / 18.0
+        for (i in 0..18) {
+            for (j in 0..18) {
+                points.add(Point(i * intervalW, j * intervalH))
             }
         }
         return points
     }
+
 }
