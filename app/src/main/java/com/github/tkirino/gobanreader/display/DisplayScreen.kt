@@ -20,11 +20,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.github.tkirino.gobanreader.MainViewModel
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,10 +87,19 @@ fun DisplayScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             // 2. 中央：碁盤
-            GoBoard(
-                boardMatrix = uiState.boardLayout, // uiStateのboardLayoutを渡す
-                modifier = Modifier.fillMaxWidth()
-            )
+            // DisplayScreen.kt の中で
+                    if (viewModel.debugWarpedBoard != null) {
+                        Image(
+                            bitmap = viewModel.debugWarpedBoard!!.asImageBitmap(),
+                            contentDescription = "デバッグ用：切り出した盤面"
+                        )
+                    } else {
+                        GoBoard(
+                            boardMatrix = uiState.boardLayout, // uiStateのboardLayoutを渡す
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
 
             Spacer(modifier = Modifier.weight(1f))
 

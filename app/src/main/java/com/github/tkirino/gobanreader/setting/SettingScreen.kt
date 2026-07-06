@@ -34,8 +34,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 @Composable
 fun SettingScreen(
     viewModel: MainViewModel,
-    onBlackPlayerChanged: (String) -> Unit,
-    onWhitePlayerChanged: (String) -> Unit,
+    onBlackPlayerChanged: (String) -> Unit, // 追加
+    onWhitePlayerChanged: (String) -> Unit, // 追加
     onGetGobanClick: () -> Unit,
     onHistoryClick: () -> Unit,
     modifier: Modifier = Modifier
@@ -138,16 +138,18 @@ fun SettingScreen(
         HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
         // 任意項目：対局者名など
+        // 修正箇所：viewModel を直接呼ぶのではなく、引数を使う
         OutlinedTextField(
             value = uiState.gameRecord.blackPlayer,
-            onValueChange = { viewModel.updateBlackPlayer(it) },
+            onValueChange = { onBlackPlayerChanged(it) }, // 引数を使う
             label = { Text("黒番の対局者名 (省略可)") },
             modifier = Modifier.fillMaxWidth()
         )
 
+        // 白番の入力欄
         OutlinedTextField(
             value = uiState.gameRecord.whitePlayer,
-            onValueChange = { viewModel.updateWhitePlayer(it) },
+            onValueChange = { onWhitePlayerChanged(it) }, // 引数を使う
             label = { Text("白番の対局者名 (省略可)") },
             modifier = Modifier.fillMaxWidth()
         )
