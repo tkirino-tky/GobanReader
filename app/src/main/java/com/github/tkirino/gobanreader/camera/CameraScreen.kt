@@ -34,12 +34,9 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import com.github.tkirino.gobanreader.utility.GeometryUtils
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
-import org.opencv.core.Mat
-import org.opencv.imgcodecs.Imgcodecs
 import java.io.File
 
 @OptIn(ExperimentalPermissionsApi::class)
@@ -63,14 +60,12 @@ fun CameraScreen(
         if (cameraPermissionState.status.isGranted) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
-                // AndroidViewのfactory内を以下のように差し替えてください
                 factory = { ctx ->
                     PreviewView(ctx).apply {
                         val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
                         cameraProviderFuture.addListener({
                             val cameraProvider = cameraProviderFuture.get()
 
-                            // 1. PreviewViewのアスペクト比に基づいたViewPortを作成
                             val viewPort = ViewPort.Builder(
                                 Rational(this.width, this.height),
                                 this.display.rotation
@@ -78,16 +73,11 @@ fun CameraScreen(
 
                             val preview = Preview.Builder().build().also { it.setSurfaceProvider(surfaceProvider) }
 
-                            // 2. UseCaseGroupを作成してバインド
                             val useCaseGroup = UseCaseGroup.Builder()
                                 .addUseCase(preview)
                                 .addUseCase(imageCapture)
                                 .setViewPort(viewPort)
                                 .build()
-
-                            // 3. アスペクト比の確認用ログ（ここにブレークポイントを置いてください）
-                            val screenAspect = this.width.toDouble() / this.height
-                            Log.d("CameraConfig", "Screen Aspect: $screenAspect")
 
                             cameraProvider.unbindAll()
                             cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, useCaseGroup)
@@ -97,11 +87,10 @@ fun CameraScreen(
             )
         }
 
-        // ガイドフレームの描画（UI上の目安）
         Box(
             modifier = Modifier
-                .fillMaxWidth(0.8f) // 幅は画面の80%
-                .aspectRatio(1f / 1.04f) // ★ここが重要！幅に対して高さを「1 : 1.04」で固定する
+                .fillMaxWidth(0.8f)
+                .aspectRatio(1f / 1.04f)
                 .align(Alignment.Center)
                 .border(2.dp, Color.White)
         )
@@ -117,34 +106,12 @@ fun CameraScreen(
                 sound.play(MediaActionSound.SHUTTER_CLICK)
 
                 imageCapture.takePicture(outputOptions, ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageSavedCallback {
-                    // onImageSaved 内の画像切り出し処理部分
                     override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                        val src = Imgcodecs.imread(photoFile.absolutePath)
-
-                        // ここで GeometryUtils を使用する
-                        // src.width().toDouble(), src.height().toDouble() を渡して計算
-                        // 今は引数が (width, height) のみですが、ここに offsetPercent を加えます
-                        val guideRect = GeometryUtils.calculateGuideRect(
-                            src.width().toDouble(),
-                            src.height().toDouble(),
-                            offsetPercent = 0.02 // ここで 2% の余裕を持たせます（まずはこの値で試してみてください）
-                        )
-                        // OpenCVのRectに変換して使用
-                        val cvRect = org.opencv.core.Rect(
-                            guideRect.x.toInt(),
-                            guideRect.y.toInt(),
-                            guideRect.width.toInt(),
-                            guideRect.height.toInt()
-                        )
-
-                        val cropped = Mat()
-                        src.submat(cvRect).copyTo(cropped)
-
-                        saveDebugImage(cropped, "debug_roi_final.png")
-
                         onStartReadingClick(photoFile)
                     }
-                    override fun onError(e: ImageCaptureException) {}
+                    override fun onError(e: ImageCaptureException) {
+                        Log.e("CameraScreen", "撮影失敗: ${e.message}")
+                    }
                 })
             },
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp).size(76.dp),
@@ -153,12 +120,3 @@ fun CameraScreen(
         ) {}
     }
 }
-private fun saveDebugImage(mat: Mat, filename: String) {
-    try {
-        val file = File("/sdcard/Download/", filename)
-        Imgcodecs.imwrite(file.absolutePath, mat)
-    } catch (e: Exception) {
-        Log.e("DebugLog", "Save failed: ${e.message}")
-    }
-}
-

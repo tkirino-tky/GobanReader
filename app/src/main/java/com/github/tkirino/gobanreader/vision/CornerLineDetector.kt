@@ -39,25 +39,48 @@ class CornerLineDetector(private val config: DetectionConfig = DetectionConfig()
         val linesMat = Mat()
         Imgproc.HoughLinesP(edges, linesMat, 1.0, PI / 180, config.houghThreshold, config.houghMinLineLength, config.houghMaxLineGap)
 
-        Log.d("CornerLineDetector", "ROI ${roi.x},${roi.y} で ${linesMat.rows()} 本の直線を検出しました")
-
         val candidates = mutableListOf<Line>()
         for (i in 0 until linesMat.rows()) {
             val data = linesMat.get(i, 0)
-            val line = Line(data[0] + roi.x, data[1] + roi.y, data[2] + roi.x, data[3] + roi.y)
-            candidates.add(line)
-            Log.v("CornerLineDetector", "候補線: 長さ=${line.length.toInt()}, 角度=${line.angleDeg.toInt()}度")
+            candidates.add(Line(data[0] + roi.x, data[1] + roi.y, data[2] + roi.x, data[3] + roi.y))
         }
 
-        val best = candidates.maxByOrNull { it.length }
+        // ロジック：ROIの場所に応じた境界優先評価
+        val best = candidates.maxByOrNull { line ->
+            val midX = (line.x1 + line.x2) / 2.0
+            val midY = (line.y1 + line.y2) / 2.0
+
+            // ROIの端（左, 上, 右, 下）への距離
+            val distToLeft = midX - roi.x
+            val distToRight = (roi.x + roi.width) - midX
+            val distToTop = midY - roi.y
+            val distToBottom = (roi.y + roi.height) - midY
+
+            // 現在処理中のROIが画像全体のどこにあるかで優先境界を決定
+            val minDistToBoundary = when {
+                roi.y > (src.height() / 2) -> distToBottom // 下端ROI
+                roi.y < (src.height() / 2) -> distToTop    // 上端ROI
+                else -> Math.min(distToLeft, distToRight) // 左右ROI
+            }
+
+            // スコア = 長さ * 5 - 境界距離 * 10
+            // 境界に近い線ほど高く評価される
+            (line.length * 5.0) - (minDistToBoundary * 10.0)
+        }
+
         if (best != null) {
-            Log.d("CornerLineDetector", "採用線: 長さ=${best.length.toInt()}, 角度=${best.angleDeg.toInt()}度")
-        } else {
-            Log.w("CornerLineDetector", "このROIでは直線を検出できませんでした")
+            val midX = (best.x1 + best.x2) / 2.0
+            val midY = (best.y1 + best.y2) / 2.0
+            // 境界までの距離をログ出力（デバッグ用）
+            val distToBoundary = when {
+                roi.y > (src.height() / 2) -> (roi.y + roi.height) - midY
+                roi.y < (src.height() / 2) -> midY - roi.y
+                else -> Math.min(midX - roi.x, (roi.x + roi.width) - midX)
+            }
+            Log.d("CornerLineDetector", "採用線: 長さ=${best.length.toInt()}, 距離:${distToBoundary.toInt()}")
         }
         return best
     }
-
     private fun preprocessAndDetectEdges(roi: Mat): Mat {
         val gray = Mat()
         Imgproc.cvtColor(roi, gray, Imgproc.COLOR_BGR2GRAY)

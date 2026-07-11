@@ -1,6 +1,6 @@
 package com.github.tkirino.gobanreader
 
-import android.os.Environment
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -11,6 +11,8 @@ import com.github.tkirino.gobanreader.export.SgfWriter
 import com.github.tkirino.gobanreader.model.GameRecord
 import com.github.tkirino.gobanreader.model.ReaderUiState
 import com.github.tkirino.gobanreader.model.StoneColor
+import com.github.tkirino.gobanreader.utility.GeometryUtils
+import com.github.tkirino.gobanreader.vision.GuidedBoardDetector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,43 +36,51 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    // --- 抽象化された窓口 ---
-    // MainViewModel.kt の processCapturedPhoto メソッドのみを以下のように修正します
-    // パラメータとして拡大率を受け取れるように変更
     fun processCapturedPhoto(file: File) {
         val src = Imgcodecs.imread(file.absolutePath)
-        if (src.empty()) return
+        if (src.empty()) {
+            Log.e("MainViewModel", "画像読み込み失敗: ${file.absolutePath}")
+            return
+        }
 
-        // 1. ガイドフレーム座標の取得（現在は仮のベース座標ですが、ここが起点です）
-        // 後にこの値が前回の推論結果等から取得されることになります
-        val baseRect = Rect(307, 770, 2457, 2558)
+        val guideRect = GeometryUtils.calculateGuideRect(
+            width = src.cols().toDouble(),
+            height = src.rows().toDouble()
+        )
 
-        // 2. 5%のオフセットを含めた矩形計算 (API活用)
-        // Rectの算術演算を避け、プロパティから計算します
-        val offsetW = (baseRect.width * 0.05).toInt()
-        val offsetH = (baseRect.height * 0.05).toInt()
+        val cvRect = Rect(guideRect.x.toInt(), guideRect.y.toInt(), guideRect.width.toInt(), guideRect.height.toInt())
+        val cropped = Mat(src, cvRect)
 
-        // 境界チェックAPI（coerceAtLeast/Most）を用いて、画像外へのアクセスを確実に防止
-        val x = (baseRect.x - offsetW).coerceAtLeast(0)
-        val y = (baseRect.y - offsetH).coerceAtLeast(0)
-        val width = (baseRect.width + 2 * offsetW).coerceAtMost(src.cols() - x)
-        val height = (baseRect.height + 2 * offsetH).coerceAtMost(src.rows() - y)
+        val detector = GuidedBoardDetector(cvRect)
 
-        val finalRect = Rect(x, y, width, height)
+        // 四隅の検出を実行
+        val corners = detector.detectCorners(cropped)
 
-        // 3. 切り出しとデバッグ保存
-        val roi = Mat(src, finalRect)
-        val debugFile = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "debug_roi.png")
+        if (corners != null) {
+            Log.d("MainViewModel", "四隅検出成功、歪み補正を実行します。")
+            // 検出した四隅を使って画像を真正面に補正
+            val warped = detector.warpBoard(cropped, corners)
 
-        // 画像保存（API）
-        Imgcodecs.imwrite(debugFile.absolutePath, roi)
+            // 結果を画面で確認できるようにBitmapに変換して保持
+            val bitmap = android.graphics.Bitmap.createBitmap(warped.cols(), warped.rows(), android.graphics.Bitmap.Config.ARGB_8888)
+            org.opencv.android.Utils.matToBitmap(warped, bitmap)
+            debugWarpedBoard = bitmap
 
-        // メモリ解放（API）
-        roi.release()
+            warped.release()
+        } else {
+            Log.e("MainViewModel", "四隅の検出に失敗したため、歪み補正をスキップしました。")
+        }
+
+        _uiState.update { currentState ->
+            currentState.copy(
+                isLoading = false
+            )
+        }
+
         src.release()
+        cropped.release()
     }
 
-    // --- ロジックの復元 ---
     fun loadDummySgf() {
         val dummySgfText = """
         (;GM[1]FF[4]AP[Zenith:7.0]SZ[19]HA[0]KM[6.5]CA[UTF-8]
