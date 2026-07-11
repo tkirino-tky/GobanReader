@@ -50,9 +50,9 @@ fun App() {
         }
         composable<Route.Camera> {
             CameraScreen(
-                onStartReadingClick = { file, rect ->
-                    // 抽象化されたRect（ComposeのRect）のみをViewModelに渡す
-                    readerViewModel.processCapturedPhoto(file, rect)
+                onStartReadingClick = { file ->
+                    // Rectを渡す必要はなくなりました
+                    readerViewModel.processCapturedPhoto(file)
                     navController.navigate(Route.Display)
                 },
                 onBackClick = { navController.popBackStack() }

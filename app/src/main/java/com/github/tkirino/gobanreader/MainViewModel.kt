@@ -1,23 +1,25 @@
 package com.github.tkirino.gobanreader
 
+import android.os.Environment
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
+import com.github.tkirino.gobanreader.export.SgfParser
+import com.github.tkirino.gobanreader.export.SgfWriter
+import com.github.tkirino.gobanreader.model.GameRecord
+import com.github.tkirino.gobanreader.model.ReaderUiState
+import com.github.tkirino.gobanreader.model.StoneColor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.opencv.core.Mat
+import org.opencv.core.Rect
+import org.opencv.imgcodecs.Imgcodecs
 import java.io.File
-import org.opencv.core.Rect as OpenCvRect
-import com.github.tkirino.gobanreader.model.ReaderUiState
-import com.github.tkirino.gobanreader.model.GameRecord
-import com.github.tkirino.gobanreader.model.StoneColor
-import com.github.tkirino.gobanreader.export.SgfParser
-import com.github.tkirino.gobanreader.export.SgfWriter
-import com.github.tkirino.gobanreader.vision.GuidedBoardDetector
 
 class MainViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(ReaderUiState())
@@ -33,26 +35,39 @@ class MainViewModel : ViewModel() {
     }
 
     // --- 抽象化された窓口 ---
-    fun processCapturedPhoto(photoFile: File, composeRect: androidx.compose.ui.geometry.Rect) {
-        val openCvRect = OpenCvRect(
-            composeRect.left.toInt(),
-            composeRect.top.toInt(),
-            composeRect.width.toInt(),
-            composeRect.height.toInt()
-        )
+    // MainViewModel.kt の processCapturedPhoto メソッドのみを以下のように修正します
+    // パラメータとして拡大率を受け取れるように変更
+    fun processCapturedPhoto(file: File) {
+        val src = Imgcodecs.imread(file.absolutePath)
+        if (src.empty()) return
 
-        viewModelScope.launch {
-            val detector = GuidedBoardDetector(openCvRect)
-            val warpedMat = detector.process(photoFile)
-            if (warpedMat != null) {
-                val bmp = android.graphics.Bitmap.createBitmap(
-                    warpedMat.cols(), warpedMat.rows(), android.graphics.Bitmap.Config.ARGB_8888
-                )
-                org.opencv.android.Utils.matToBitmap(warpedMat, bmp)
-                debugWarpedBoard = bmp
-                warpedMat.release()
-            }
-        }
+        // 1. ガイドフレーム座標の取得（現在は仮のベース座標ですが、ここが起点です）
+        // 後にこの値が前回の推論結果等から取得されることになります
+        val baseRect = Rect(307, 770, 2457, 2558)
+
+        // 2. 5%のオフセットを含めた矩形計算 (API活用)
+        // Rectの算術演算を避け、プロパティから計算します
+        val offsetW = (baseRect.width * 0.05).toInt()
+        val offsetH = (baseRect.height * 0.05).toInt()
+
+        // 境界チェックAPI（coerceAtLeast/Most）を用いて、画像外へのアクセスを確実に防止
+        val x = (baseRect.x - offsetW).coerceAtLeast(0)
+        val y = (baseRect.y - offsetH).coerceAtLeast(0)
+        val width = (baseRect.width + 2 * offsetW).coerceAtMost(src.cols() - x)
+        val height = (baseRect.height + 2 * offsetH).coerceAtMost(src.rows() - y)
+
+        val finalRect = Rect(x, y, width, height)
+
+        // 3. 切り出しとデバッグ保存
+        val roi = Mat(src, finalRect)
+        val debugFile = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "debug_roi.png")
+
+        // 画像保存（API）
+        Imgcodecs.imwrite(debugFile.absolutePath, roi)
+
+        // メモリ解放（API）
+        roi.release()
+        src.release()
     }
 
     // --- ロジックの復元 ---
