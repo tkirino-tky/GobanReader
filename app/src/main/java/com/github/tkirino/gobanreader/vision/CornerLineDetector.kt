@@ -1,127 +1,137 @@
 package com.github.tkirino.gobanreader.vision
 
-import android.util.Log
-import org.opencv.core.Core
-import org.opencv.core.Mat
-import org.opencv.core.Rect
-import org.opencv.core.Size
-import org.opencv.core.times
+import org.opencv.core.*
 import org.opencv.imgproc.Imgproc
-import kotlin.math.PI
-import kotlin.math.atan2
-import kotlin.math.hypot
+import kotlin.math.*
 
-// 碁盤の直線検出用設定
-data class DetectionConfig(
-    val claheClipLimit: Double = 2.0,
-    val cannyLowerRatio: Double = 0.5,
-    val cannyUpperRatio: Double = 1.5,
-    val houghThreshold: Int = 40,
-    val houghMinLineLength: Double = 60.0,
-    val houghMaxLineGap: Double = 25.0
+// 辺の定義と結果を保持するクラス
+enum class EdgeType { TOP, BOTTOM, LEFT, RIGHT }
+// CornerLineDetector.kt 内の定義を修正
+data class CornerResult(
+    val roi: Rect,
+    val detectedLine: Line?,
+    val allCandidates: List<Line> = emptyList()
 )
 
-class CornerLineDetector(private val config: DetectionConfig = DetectionConfig()) {
+class CornerLineDetector {
 
-    data class CornerResult(val roi: Rect, val detectedLine: Line?)
+    // 設定値をクラス内部の定数として定義し、外部クラスへの依存をなくしました
+    private val houghThreshold = 50
+    private val houghMinLineLength = 50.0
+    private val houghMaxLineGap = 10.0
+    private val horizontalAngleToleranceDeg = 5.0
+    private val verticalAngleToleranceDeg = 5.0
+    private val clusterOffsetTolerancePx = 20.0
+    private val segmentCountBonus = 10.0
+    private val boundaryDistanceWeight = 2.0 // 0.5 から 2.0 に変更
+    private val claheClipLimit = 2.0
+    private val cannyLowerRatio = 0.5
+    private val cannyUpperRatio = 1.5
 
-    // ROIリストを受け取り、それぞれから直線を抽出する
-    fun detectCornerLines(src: Mat, roiList: List<Rect>): List<CornerResult> {
-        return roiList.map { roi ->
-            CornerResult(roi, extractBestLineFromRoi(src, roi))
+    fun detectCornerLines(src: Mat, roiList: List<Rect>, edgeTypes: List<EdgeType>): List<CornerResult> {
+        require(roiList.size == edgeTypes.size) { "ROIとEdgeTypeの数は一致させる必要があります" }
+
+        return roiList.mapIndexed { index, roi ->
+            val (bestLine, candidates) = extractBestLineFromRoi(src, roi, edgeTypes[index])
+            CornerResult(roi, bestLine, candidates)
         }
     }
 
-    private fun extractBestLineFromRoi(src: Mat, roi: Rect): Line? {
+    private fun extractBestLineFromRoi(src: Mat, roi: Rect, type: EdgeType): Pair<Line?, List<Line>> {
         val matRoi = Mat(src, roi)
         val edges = preprocessAndDetectEdges(matRoi)
-
         val linesMat = Mat()
-        Imgproc.HoughLinesP(edges, linesMat, 1.0, PI / 180, config.houghThreshold, config.houghMinLineLength, config.houghMaxLineGap)
 
-        val candidates = mutableListOf<Line>()
+        Imgproc.HoughLinesP(edges, linesMat, 1.0, PI / 180,
+            houghThreshold, houghMinLineLength, houghMaxLineGap)
+
+        val rawCandidates = mutableListOf<Line>()
         for (i in 0 until linesMat.rows()) {
             val data = linesMat.get(i, 0)
-            candidates.add(Line(data[0] + roi.x, data[1] + roi.y, data[2] + roi.x, data[3] + roi.y))
+            rawCandidates.add(Line(data[0] + roi.x, data[1] + roi.y, data[2] + roi.x, data[3] + roi.y))
         }
 
-        // ロジック：ROIの場所に応じた境界優先評価
-        val best = candidates.maxByOrNull { line ->
-            val midX = (line.x1 + line.x2) / 2.0
-            val midY = (line.y1 + line.y2) / 2.0
+        val isHorizontal = (type == EdgeType.TOP || type == EdgeType.BOTTOM)
+        val tolerance = if (isHorizontal) horizontalAngleToleranceDeg else verticalAngleToleranceDeg
+        val expectedAngle = if (isHorizontal) 0.0 else 90.0
 
-            // ROIの端（左, 上, 右, 下）への距離
-            val distToLeft = midX - roi.x
-            val distToRight = (roi.x + roi.width) - midX
-            val distToTop = midY - roi.y
-            val distToBottom = (roi.y + roi.height) - midY
+        val angleFiltered = rawCandidates.filter { angleDiff(it.angleDeg, expectedAngle) <= tolerance }
+        if (angleFiltered.isEmpty()) return Pair(null, emptyList())
 
-            // 現在処理中のROIが画像全体のどこにあるかで優先境界を決定
-            val minDistToBoundary = when {
-                roi.y > (src.height() / 2) -> distToBottom // 下端ROI
-                roi.y < (src.height() / 2) -> distToTop    // 上端ROI
-                else -> Math.min(distToLeft, distToRight) // 左右ROI
+        val clusters = mergeCollinearSegments(angleFiltered, isHorizontal)
+
+        // CornerLineDetector.kt の extractBestLineFromRoi 内
+        // 既存のコードの maxByOrNull の中身を以下のように強化します
+        // CornerLineDetector.kt の extractBestLineFromRoi 内のスコア計算部分
+        val bestLine = clusters.maxByOrNull { cluster ->
+            val line = cluster.mergedLine
+            val mid = if (isHorizontal) (line.y1 + line.y2) / 2.0 else (line.x1 + line.x2) / 2.0
+
+            // 既存の距離ペナルティ
+            val distToBoundary = when (type) {
+                EdgeType.TOP -> mid - roi.y
+                EdgeType.BOTTOM -> (roi.y + roi.height) - mid
+                EdgeType.LEFT -> mid - roi.x
+                EdgeType.RIGHT -> (roi.x + roi.width) - mid
             }
 
-            // スコア = 長さ * 5 - 境界距離 * 10
-            // 境界に近い線ほど高く評価される
-            (line.length * 5.0) - (minDistToBoundary * 10.0)
-        }
-
-        if (best != null) {
-            val midX = (best.x1 + best.x2) / 2.0
-            val midY = (best.y1 + best.y2) / 2.0
-            // 境界までの距離をログ出力（デバッグ用）
-            val distToBoundary = when {
-                roi.y > (src.height() / 2) -> (roi.y + roi.height) - midY
-                roi.y < (src.height() / 2) -> midY - roi.y
-                else -> Math.min(midX - roi.x, (roi.x + roi.width) - midX)
+            // ★追加：角（Corner）への到達度を評価する
+            // 線がROIの端にどれだけ近いか（= 角に近いか）を計算
+            val distToCorner = if (isHorizontal) {
+                min(abs(line.x1 - roi.x), abs(line.x2 - (roi.x + roi.width)))
+            } else {
+                min(abs(line.y1 - roi.y), abs(line.y2 - (roi.y + roi.height)))
             }
-            Log.d("CornerLineDetector", "採用線: 長さ=${best.length.toInt()}, 距離:${distToBoundary.toInt()}")
-        }
-        return best
+
+            val score = (line.length * 5.0) + (cluster.segmentCount * segmentCountBonus) - (distToBoundary * 2.0)
+
+            // 「角に近づくほど高スコア」とする補正（1.0 の係数は適宜調整可能です）
+            score - (distToCorner * 1.0)
+        }?.mergedLine
+
+        return Pair(bestLine, angleFiltered)
     }
+
+    private fun angleDiff(a: Double, b: Double): Double {
+        val diff = abs(a - b) % 180.0
+        return min(diff, 180.0 - diff)
+    }
+
+    private fun mergeCollinearSegments(lines: List<Line>, isHorizontal: Boolean): List<LineCluster> {
+        val offset = { l: Line -> if (isHorizontal) (l.y1 + l.y2) / 2.0 else (l.x1 + l.x2) / 2.0 }
+        val sorted = lines.sortedBy(offset)
+        val clusters = mutableListOf<MutableList<Line>>()
+        for (line in sorted) {
+            val last = clusters.lastOrNull()?.last()
+            if (last != null && abs(offset(line) - offset(last)) <= clusterOffsetTolerancePx) {
+                clusters.last().add(line)
+            } else {
+                clusters.add(mutableListOf(line))
+            }
+        }
+        return clusters.map { group ->
+            val pts = group.flatMap { listOf(it.x1 to it.y1, it.x2 to it.y2) }
+            val merged = if (isHorizontal) {
+                Line(pts.minByOrNull { it.first }!!.first, pts.minByOrNull { it.first }!!.second,
+                    pts.maxByOrNull { it.first }!!.first, pts.maxByOrNull { it.first }!!.second)
+            } else {
+                Line(pts.minByOrNull { it.second }!!.first, pts.minByOrNull { it.second }!!.second,
+                    pts.maxByOrNull { it.second }!!.first, pts.maxByOrNull { it.second }!!.second)
+            }
+            LineCluster(merged, group.size)
+        }
+    }
+
     private fun preprocessAndDetectEdges(roi: Mat): Mat {
-        val gray = Mat()
-        Imgproc.cvtColor(roi, gray, Imgproc.COLOR_BGR2GRAY)
-
-        val clahe = Imgproc.createCLAHE(config.claheClipLimit, Size(8.0, 8.0))
-        val enhanced = Mat()
-        clahe.apply(gray, enhanced)
-
-        val blurred = Mat()
-        Imgproc.GaussianBlur(enhanced, blurred, Size(5.0, 5.0), 0.0)
-
-        // 【ここを修正】Core.mean()の結果を明示的にKotlinのDoubleとして取得する
-        val meanVal = Core.mean(blurred).`val`[0]
-        val meanDouble = meanVal as Double
-
-        // これで meanDouble に対して算術演算が可能になります
-        var lower = meanDouble * config.cannyLowerRatio
-        if (lower < 10.0) lower = 10.0
-
-        var upper = meanDouble * config.cannyUpperRatio
-        if (upper > 255.0) upper = 255.0
-
+        val gray = Mat(); Imgproc.cvtColor(roi, gray, Imgproc.COLOR_BGR2GRAY)
+        val enhanced = Mat(); Imgproc.createCLAHE(claheClipLimit, Size(8.0, 8.0)).apply(gray, enhanced)
+        val blurred = Mat(); Imgproc.GaussianBlur(enhanced, blurred, Size(5.0, 5.0), 0.0)
+        val mean = Core.mean(blurred).`val`[0]
         val edges = Mat()
-        Imgproc.Canny(blurred, edges, lower, upper)
+        Imgproc.Canny(blurred, edges, (mean * cannyLowerRatio).coerceAtLeast(10.0),
+            (mean * cannyUpperRatio).coerceAtMost(255.0))
         return edges
     }
+
+    private data class LineCluster(val mergedLine: Line, val segmentCount: Int)
 }
-
-// これを CornerLineDetector.kt の末尾（クラスの外）に追記してください
-// CornerLineDetector.kt 内の Line クラスを以下に差し替えてください
-data class Line(
-    val x1: Double, val y1: Double,
-    val x2: Double, val y2: Double
-) {
-    val length get() = hypot(x2 - x1, y2 - y1)
-
-    // 角度計算プロパティを追加
-    val angleDeg: Double get() {
-        val rad = atan2(y2 - y1, x2 - x1)
-        val deg = Math.toDegrees(rad)
-        return if (deg < 0) deg + 180 else deg
-    }
-}
-

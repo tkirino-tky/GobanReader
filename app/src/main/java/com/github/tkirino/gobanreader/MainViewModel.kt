@@ -23,12 +23,21 @@ import org.opencv.core.Rect
 import org.opencv.imgcodecs.Imgcodecs
 import java.io.File
 
-class MainViewModel : ViewModel() {
+// MainViewModel.kt の修正
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel // 追加
+
+// 修正前: class MainViewModel : ViewModel() {
+// 修正後:
+class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(ReaderUiState())
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
 
     var toastMessage by mutableStateOf<String?>(null)
-    var debugWarpedBoard by mutableStateOf<android.graphics.Bitmap?>(null)
+    private val _debugWarpedBoard = mutableStateOf<android.graphics.Bitmap?>(null)
+    var debugWarpedBoard: android.graphics.Bitmap?
+        get() = _debugWarpedBoard.value
+        set(value) { _debugWarpedBoard.value = value }
 
     init {
         if (BuildConfig.DEBUG) {
@@ -51,31 +60,33 @@ class MainViewModel : ViewModel() {
         val cvRect = Rect(guideRect.x.toInt(), guideRect.y.toInt(), guideRect.width.toInt(), guideRect.height.toInt())
         val cropped = Mat(src, cvRect)
 
-        val detector = GuidedBoardDetector(cvRect)
+        val detector = GuidedBoardDetector(getApplication(), cvRect)
 
-        // 四隅の検出を実行
-        val corners = detector.detectCorners(cropped)
+        try {
+            // 四隅の検出を実行
+            Log.d("MainViewModel", "四隅検出を開始します")
+            val corners = detector.detectCorners(cropped)
 
-        if (corners != null) {
-            Log.d("MainViewModel", "四隅検出成功、歪み補正を実行します。")
-            // 検出した四隅を使って画像を真正面に補正
-            val warped = detector.warpBoard(cropped, corners)
+            if (corners != null) {
+                Log.d("MainViewModel", "四隅検出成功、歪み補正を実行します。")
+                val warped = detector.warpBoard(cropped, corners)
 
-            // 結果を画面で確認できるようにBitmapに変換して保持
-            val bitmap = android.graphics.Bitmap.createBitmap(warped.cols(), warped.rows(), android.graphics.Bitmap.Config.ARGB_8888)
-            org.opencv.android.Utils.matToBitmap(warped, bitmap)
-            debugWarpedBoard = bitmap
+                val bitmap = android.graphics.Bitmap.createBitmap(warped.cols(), warped.rows(), android.graphics.Bitmap.Config.ARGB_8888)
+                org.opencv.android.Utils.matToBitmap(warped, bitmap)
+                debugWarpedBoard = bitmap
+                Log.d("MainViewModel", "★debugWarpedBoardのセット後、中身はnullですか？: ${debugWarpedBoard == null}")
 
-            warped.release()
-        } else {
-            Log.e("MainViewModel", "四隅の検出に失敗したため、歪み補正をスキップしました。")
+                warped.release()
+            } else {
+                // ここでエラー理由を詳細に出力
+                Log.e("MainViewModel", "四隅の検出に失敗しました (detectCorners が null を返しました)")
+            }
+        } catch (e: Exception) {
+            // ここで例外をキャッチする
+            Log.e("MainViewModel", "四隅検出中に例外が発生しました: ${e.message}", e)
         }
 
-        _uiState.update { currentState ->
-            currentState.copy(
-                isLoading = false
-            )
-        }
+        _uiState.update { currentState -> currentState.copy(isLoading = false) }
 
         src.release()
         cropped.release()
