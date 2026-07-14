@@ -15,50 +15,64 @@ import org.opencv.core.Rect
 import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
-
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.hypot
 class GuidedBoardDetector(
     private val context: Context,
     private val guideRect: Rect
 ) {
     private val detector = CornerLineDetector()
 
+    // GuidedBoardDetector.kt 内の detectCorners 関数
     fun detectCorners(croppedMat: Mat): List<Point>? {
-        Log.d("GuidedBoardDetector", "detectCorners 開始: cols=${croppedMat.cols()}, rows=${croppedMat.rows()}")
+        if (croppedMat.empty()) return null
 
-        if (croppedMat.empty()) {
-            Log.e("GuidedBoardDetector", "画像が空です")
-            return null
-        }
-
-        // GuidedBoardDetector.kt 内の rois 定義部分を修正案
         val bandWidth = (croppedMat.cols() / 10).coerceIn(40, 100)
-
-        val rois = listOf(
+        val rois: List<Rect> = listOf(
             Rect(0, 0, croppedMat.cols(), bandWidth),
             Rect(0, croppedMat.rows() - bandWidth, croppedMat.cols(), bandWidth),
             Rect(0, 0, bandWidth, croppedMat.rows()),
-            // 右側のROIの x を調整して外側に寄せる
             Rect(croppedMat.cols() - bandWidth - 10, 0, bandWidth + 10, croppedMat.rows())
         )
+        val edgeTypes = listOf(EdgeType.TOP, EdgeType.BOTTOM, EdgeType.LEFT, EdgeType.RIGHT)
+        val allEdgeCandidates = detector.detectCandidates(croppedMat, rois, edgeTypes)
 
-        val edgeTypes = listOf(
-            EdgeType.TOP,
-            EdgeType.BOTTOM,
-            EdgeType.LEFT,
-            EdgeType.RIGHT
-        )
-
-        val results = detector.detectCornerLines(croppedMat, rois, edgeTypes)
-
-        val lineTop = results[0].detectedLine
-        val lineBottom = results[1].detectedLine
-        val lineLeft = results[2].detectedLine
-        val lineRight = results[3].detectedLine
-
-        if (lineTop == null || lineBottom == null || lineLeft == null || lineRight == null) {
-            Log.w("GuidedBoardDetector", "いずれかの辺の直線検出に失敗したため、交点を計算できません。")
-            return null
+        allEdgeCandidates.forEachIndexed { index, edge ->
+            Log.d("LineCandidate", "EdgeType: ${edge.type}, Count: ${edge.candidates.size}")
+            edge.candidates.forEachIndexed { cIndex, cand ->
+                Log.d("LineCandidate", "  [$cIndex] p1:${cand.p1}, p2:${cand.p2}, Len:${hypot(cand.p2.x-cand.p1.x, cand.p2.y-cand.p1.y).toInt()}, Score:${"%.2f".format(cand.score)}")
+            }
         }
+        // 1. 各辺から「候補上位3本」を取り出す
+        val bestLinesList = allEdgeCandidates.map { edge -> edge.candidates.take(3) }
+
+
+
+        // 2. 総当たりでベストな組み合わせを探す
+        var bestScore = -Double.MAX_VALUE
+        var bestCombination: List<LineCandidate>? = null
+
+        for (top in bestLinesList[0]) {
+            for (bottom in bestLinesList[1]) {
+                for (left in bestLinesList[2]) {
+                    for (right in bestLinesList[3]) {
+                        val score = evaluateCombination(top, bottom, left, right)
+                        if (score > bestScore) {
+                            bestScore = score
+                            bestCombination = listOf(top, bottom, left, right)
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. 採用した組み合わせで交点計算
+        val combo = bestCombination ?: return null
+        val lineTop = Line(combo[0].p1.x, combo[0].p1.y, combo[0].p2.x, combo[0].p2.y)
+        val lineBottom = Line(combo[1].p1.x, combo[1].p1.y, combo[1].p2.x, combo[1].p2.y)
+        val lineLeft = Line(combo[2].p1.x, combo[2].p1.y, combo[2].p2.x, combo[2].p2.y)
+        val lineRight = Line(combo[3].p1.x, combo[3].p1.y, combo[3].p2.x, combo[3].p2.y)
 
         val topLeft = computeIntersection(lineTop, lineLeft)
         val topRight = computeIntersection(lineTop, lineRight)
@@ -66,19 +80,46 @@ class GuidedBoardDetector(
         val bottomLeft = computeIntersection(lineBottom, lineLeft)
 
         if (topLeft == null || topRight == null || bottomRight == null || bottomLeft == null) {
-            Log.w("GuidedBoardDetector", "直線の交点計算に失敗しました（平行な関係など）。")
             return null
         }
 
         val resultsCorners = listOf(topLeft, topRight, bottomRight, bottomLeft)
 
-        // デバッグ画像の生成と保存
-        val debugMat = drawDebugOverlay(croppedMat, rois, results, resultsCorners)
+        // 4. デバッグ画像の生成と保存
+        val debugMat = drawDebugOverlay(croppedMat, rois, allEdgeCandidates, resultsCorners)
         saveDebugImage(this.context, debugMat)
 
-        Log.d("GuidedBoardDetector", "四隅の座標導出に成功: TL=$topLeft, TR=$topRight, BR=$bottomRight, BL=$bottomLeft")
-
         return resultsCorners
+    }
+
+    // 評価関数（ここをこれから作り込みます）
+    private fun evaluateCombination(
+        top: LineCandidate,
+        bottom: LineCandidate,
+        left: LineCandidate,
+        right: LineCandidate
+    ): Double {
+        // 角度の計算用ヘルパー（関数内での定義を忘れずに）
+        fun getAngle(c: LineCandidate): Double {
+            val angle = Math.toDegrees(atan2(c.p2.y - c.p1.y, c.p2.x - c.p1.x))
+            return if (angle < 0) angle + 180 else angle
+        }
+        fun getLen(c: LineCandidate): Double = hypot(c.p2.x - c.p1.x, c.p2.y - c.p1.y)
+
+        // 1. 角度ペナルティ：ズレが大きいほどスコアを下げる（係数5.0で重み付け）
+        val angleScore = -(abs(getAngle(top) - 0.0) +
+                abs(getAngle(bottom) - 0.0) +
+                abs(getAngle(left) - 90.0) +
+                abs(getAngle(right) - 90.0)) * 5.0
+
+        // 2. 長さスコア：2乗することで「長い線」を圧倒的に優遇する
+        // 短い線（ノイズ）は極端にスコアが低くなるため、自然と無視されます
+        fun scoreLen(c: LineCandidate): Double = (getLen(c) * getLen(c)) * 0.01
+
+        // 3. 総合スコア
+        val totalScore = scoreLen(top) + scoreLen(bottom) + scoreLen(left) + scoreLen(right) + angleScore
+
+        return totalScore
     }
 
     private fun computeIntersection(l1: Line, l2: Line): Point? {
@@ -127,7 +168,7 @@ class GuidedBoardDetector(
 fun drawDebugOverlay(
     srcMat: Mat,
     rois: List<Rect>,
-    results: List<CornerResult>, // ここに全候補が入っている前提
+    results: List<EdgeCandidates>, // ここを変更
     corners: List<Point>?
 ): Mat {
     val debug = srcMat.clone()
@@ -138,17 +179,19 @@ fun drawDebugOverlay(
         Imgproc.rectangle(debug, r.tl(), r.br(), Scalar(0.0, 255.0, 255.0), 2)
     }
 
-    // 2. ★追加：すべての候補線を薄い色（グレー）で描画
-    results.forEach { res ->
-        res.allCandidates?.forEach { line -> // allCandidates を持つ必要があります
-            Imgproc.line(debug, Point(line.x1, line.y1), Point(line.x2, line.y2), Scalar(128.0, 128.0, 128.0), 1)
+    // 2. ★すべての候補線を薄い色で描画
+    results.forEach { edge ->
+        edge.candidates.forEach { line ->
+            Imgproc.line(debug, line.p1, line.p2, Scalar(128.0, 128.0, 128.0), 1)
         }
     }
 
     // 3. 最終選定ライン(赤・太く)
-    results.forEach { res ->
-        res.detectedLine?.let { line ->
-            Imgproc.line(debug, Point(line.x1, line.y1), Point(line.x2, line.y2), Scalar(0.0, 0.0, 255.0), 3)
+    // bestLines から取り出して描画します
+    val bestLines = results.map { it.candidates.firstOrNull() }
+    bestLines.forEach { line ->
+        line?.let {
+            Imgproc.line(debug, it.p1, it.p2, Scalar(0.0, 0.0, 255.0), 3)
         }
     }
 
