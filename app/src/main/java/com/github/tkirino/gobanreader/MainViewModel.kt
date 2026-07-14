@@ -26,6 +26,7 @@ import java.io.File
 // MainViewModel.kt の修正
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel // 追加
+import org.opencv.imgproc.Imgproc
 
 // 修正前: class MainViewModel : ViewModel() {
 // 修正後:
@@ -59,13 +60,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val cvRect = Rect(guideRect.x.toInt(), guideRect.y.toInt(), guideRect.width.toInt(), guideRect.height.toInt())
         val cropped = Mat(src, cvRect)
+        val grayMat = Mat()
+        Imgproc.cvtColor(cropped, grayMat, Imgproc.COLOR_BGR2GRAY)
 
         val detector = GuidedBoardDetector(getApplication(), cvRect)
 
         try {
             // 四隅の検出を実行
             Log.d("MainViewModel", "四隅検出を開始します")
-            val corners = detector.detectCorners(cropped)
+            val corners = detector.detectCorners(grayMat)
 
             if (corners != null) {
                 Log.d("MainViewModel", "四隅検出成功、歪み補正を実行します。")
