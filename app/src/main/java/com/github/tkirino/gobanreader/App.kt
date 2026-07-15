@@ -8,22 +8,10 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.github.tkirino.gobanreader.camera.CameraScreen
+import com.github.tkirino.gobanreader.corner.CornerScreen
 import com.github.tkirino.gobanreader.display.DisplayScreen
 import com.github.tkirino.gobanreader.setting.SettingScreen
 import kotlinx.serialization.Serializable
-
-// 対局情報入力画面　ーーーーーーーーー＞　カメラ撮影・画像選択画面
-// (Settings)     onGetGobanClick   (GobanReader)
-//  onHistoryClick                  onStartReadingClick
-//　　　　｜　　　　　　　　　　　          　｜
-//　　　　V　　　　　　　　　　　　           V
-//　　　履歴一覧　　　　　　　　　　　　　　　読み込みの結果を表示
-//     (History)			　　　　　　　　(ReadResult)
-//                       　　　　　　　　 onWriteSGFClick
-//　　　　　　　　　　　　　　　　　　　　　　　　｜
-//　　　　　　　　　　　　　　　　　　　　　　　　V
-//　　　　　　　　　　　　　　　　 　　　　　SGF出力
-//                           　　　　　(ToSGFFile)
 
 @Composable
 fun App() {
@@ -51,12 +39,30 @@ fun App() {
         composable<Route.Camera> {
             CameraScreen(
                 onStartReadingClick = { file ->
-                    // Rectを渡す必要はなくなりました
-                    readerViewModel.processCapturedPhoto(file)
-                    navController.navigate(Route.Display)
+                    // 1. ビットマップを ViewModel にロード（ViewModelに実装が必要です）
+                    readerViewModel.loadPhotoForAdjustment(file)
+                    // 2. 調整画面へ遷移
+                    navController.navigate(Route.Corner)
                 },
                 onBackClick = { navController.popBackStack() }
             )
+        }
+        composable<Route.Corner> {
+            // ViewModel からロード済みの Bitmap と検出結果を取得
+            val bitmap = readerViewModel.adjustmentBitmap
+            val detection = readerViewModel.lastDetectionResult
+
+            if (bitmap != null && detection != null) {
+                CornerScreen(
+                    bitmap = bitmap,
+                    initialDetection = detection,
+                    onConfirmed = { corners ->
+                        // 3. 確定した座標で処理を実行して結果画面へ
+                        readerViewModel.processWithCorners(corners)
+                        navController.navigate(Route.Display)
+                    }
+                )
+            }
         }
         composable<Route.Display> {
             DisplayScreen(
@@ -76,6 +82,8 @@ object Route {
     data object History
     @Serializable
     data object Camera
+    @Serializable
+    data object Corner
     @Serializable
     data object Display
 }

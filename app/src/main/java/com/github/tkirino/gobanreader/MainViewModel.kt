@@ -1,10 +1,11 @@
 package com.github.tkirino.gobanreader
 
+import android.app.Application
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.github.tkirino.gobanreader.export.SgfParser
 import com.github.tkirino.gobanreader.export.SgfWriter
@@ -12,33 +13,33 @@ import com.github.tkirino.gobanreader.model.GameRecord
 import com.github.tkirino.gobanreader.model.ReaderUiState
 import com.github.tkirino.gobanreader.model.StoneColor
 import com.github.tkirino.gobanreader.utility.GeometryUtils
+import com.github.tkirino.gobanreader.vision.BoardCornerDetector
+import com.github.tkirino.gobanreader.vision.BoardRectifier
+import com.github.tkirino.gobanreader.vision.GridLineDetector
 import com.github.tkirino.gobanreader.vision.GuidedBoardDetector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.opencv.android.Utils
 import org.opencv.core.Mat
+import org.opencv.core.Point
 import org.opencv.core.Rect
 import org.opencv.imgcodecs.Imgcodecs
+import org.opencv.imgproc.Imgproc
 import java.io.File
 
-// MainViewModel.kt の修正
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel // 追加
-import org.opencv.imgproc.Imgproc
-
-// 修正前: class MainViewModel : ViewModel() {
-// 修正後:
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(ReaderUiState())
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
 
     var toastMessage by mutableStateOf<String?>(null)
-    private val _debugWarpedBoard = mutableStateOf<android.graphics.Bitmap?>(null)
-    var debugWarpedBoard: android.graphics.Bitmap?
-        get() = _debugWarpedBoard.value
-        set(value) { _debugWarpedBoard.value = value }
+
+    // 調整画面用の状態
+    var adjustmentBitmap: android.graphics.Bitmap? = null
+    var lastDetectionResult: List<Point>? = null
+    private var lastSourceMat: Mat? = null
 
     init {
         if (BuildConfig.DEBUG) {
@@ -46,120 +47,96 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun processCapturedPhoto(file: File) {
+    // 撮影・調整フロー: 画像読み込みと初期検出
+    fun loadPhotoForAdjustment(file: File) {
+        lastSourceMat?.release()
         val src = Imgcodecs.imread(file.absolutePath)
-        if (src.empty()) {
-            Log.e("MainViewModel", "画像読み込み失敗: ${file.absolutePath}")
-            return
-        }
+        lastSourceMat = src
 
-        val guideRect = GeometryUtils.calculateGuideRect(
-            width = src.cols().toDouble(),
-            height = src.rows().toDouble()
-        )
-
-        val cvRect = Rect(guideRect.x.toInt(), guideRect.y.toInt(), guideRect.width.toInt(), guideRect.height.toInt())
-        val cropped = Mat(src, cvRect)
         val grayMat = Mat()
-        Imgproc.cvtColor(cropped, grayMat, Imgproc.COLOR_BGR2GRAY)
+        Imgproc.cvtColor(src, grayMat, Imgproc.COLOR_BGR2GRAY)
+
+        val guideRect = GeometryUtils.calculateGuideRect(src.cols().toDouble(), src.rows().toDouble())
+        val cvRect = Rect(guideRect.x.toInt(), guideRect.y.toInt(), guideRect.width.toInt(), guideRect.height.toInt())
 
         val detector = GuidedBoardDetector(getApplication(), cvRect)
+        val detected = detector.detectCorners(grayMat)
 
-        try {
-            // 四隅の検出を実行
-            Log.d("MainViewModel", "四隅検出を開始します")
-            val corners = detector.detectCorners(grayMat)
+        this.lastDetectionResult = detected ?: getFallbackCorners(guideRect)
 
-            if (corners != null) {
-                Log.d("MainViewModel", "四隅検出成功、歪み補正を実行します。")
-                val warped = detector.warpBoard(cropped, corners)
+        val bitmap = android.graphics.Bitmap.createBitmap(src.cols(), src.rows(), android.graphics.Bitmap.Config.ARGB_8888)
+        Utils.matToBitmap(src, bitmap)
+        this.adjustmentBitmap = bitmap
 
-                val bitmap = android.graphics.Bitmap.createBitmap(warped.cols(), warped.rows(), android.graphics.Bitmap.Config.ARGB_8888)
-                org.opencv.android.Utils.matToBitmap(warped, bitmap)
-                debugWarpedBoard = bitmap
-                Log.d("MainViewModel", "★debugWarpedBoardのセット後、中身はnullですか？: ${debugWarpedBoard == null}")
-
-                warped.release()
-            } else {
-                // ここでエラー理由を詳細に出力
-                Log.e("MainViewModel", "四隅の検出に失敗しました (detectCorners が null を返しました)")
-            }
-        } catch (e: Exception) {
-            // ここで例外をキャッチする
-            Log.e("MainViewModel", "四隅検出中に例外が発生しました: ${e.message}", e)
-        }
-
-        _uiState.update { currentState -> currentState.copy(isLoading = false) }
-
-        src.release()
-        cropped.release()
+        grayMat.release()
     }
 
-    fun loadDummySgf() {
-        val dummySgfText = """
-        (;GM[1]FF[4]AP[Zenith:7.0]SZ[19]HA[0]KM[6.5]CA[UTF-8]
-        AB[pd][qp][cc][dc][ec][fc][gb][hb][ge][gf][fg][fi][dh][cg][cj]
-        [bs][br][cq][cp][co][cn][do][bm][ep][eq][fp][fo][fn][go][ho][io][hm][hl]
-        AW[cd][dd][ed][fd][gd][gc][hc][ic][ff][ci][di][ej][gk][fm][gm][gn]
-        [dl][dm][dn][en][eo][bl][bp][dp][dq][dr][ds][cr][er][fq][gq][hp][jq][op])
-        """.trimIndent()
+    // 調整フロー: ユーザー確定後に補正とGrid検出を行う
+    // 調整フロー: ユーザー確定後に補正とGrid検出を行う
+    // 調整フロー: ユーザー確定後に補正とGrid検出を行う
+    fun processWithCorners(corners: List<Point>) {
+        val src = lastSourceMat ?: return
 
+        // 1. ユーザーの指定した4隅を使って補正
+        val rectifiedMat = BoardRectifier.rectify(src, corners)
+
+        // 2. 罫線検出を実行
+        val gridDetector = GridLineDetector()
+
+        // グレースケール化してから渡すのが安全です
+        val gray = Mat()
+        Imgproc.cvtColor(rectifiedMat, gray, Imgproc.COLOR_BGR2GRAY)
+
+        val horizontal = gridDetector.detectGridLines(gray, GridLineDetector.Axis.HORIZONTAL)
+        val vertical = gridDetector.detectGridLines(gray, GridLineDetector.Axis.VERTICAL)
+
+        // 3. 検出結果のログ出力と状態反映
+        if (horizontal != null && vertical != null) {
+            Log.d("MainViewModel", "罫線検出成功: H=${horizontal.spacing}, V=${vertical.spacing}")
+            // 必要に応じて _uiState.update { ... } で解析結果を保持
+        }
+
+        gray.release()
+        rectifiedMat.release()
+    }
+
+    private fun getFallbackCorners(guideRect: Rect): List<Point> {
+        val paddingX = guideRect.width * 0.07
+        val paddingY = guideRect.height * 0.07
+        return listOf(
+            Point(guideRect.x + paddingX, guideRect.y + paddingY),
+            Point(guideRect.x + guideRect.width - paddingX, guideRect.y + paddingY),
+            Point(guideRect.x + guideRect.width - paddingX, guideRect.y + guideRect.height - paddingY),
+            Point(guideRect.x + paddingX, guideRect.y + guideRect.height - paddingY)
+        )
+    }
+
+    fun processCapturedPhoto(file: File) {
+        // 既存の自動フロー
+        loadPhotoForAdjustment(file)
+        lastDetectionResult?.let { processWithCorners(it) }
+    }
+
+    // --- 既存のユーティリティ ---
+    fun loadDummySgf() {
+        val dummySgfText = "(;GM[1]FF[4]AP[Zenith:7.0]SZ[19]HA[0]KM[6.5]CA[UTF-8]AB[pd][qp][cc][dc][ec][fc][gb][hb][ge][gf][fg][fi][dh][cg][cj][bs][br][cq][cp][co][cn][do][bm][ep][eq][fp][fo][fn][go][ho][io][hm][hl]AW[cd][dd][ed][fd][gd][gc][hc][ic][ff][ci][di][ej][gk][fm][gm][gn][dl][dm][dn][en][eo][bl][bp][dp][dq][dr][ds][cr][er][fq][gq][hp][jq][op])".trimIndent()
         val parser = SgfParser()
         val record = parser.parse(dummySgfText)
         val matrix = MutableList(19) { MutableList(19) { StoneColor.EMPTY } }
         for (coord in record.initialBlackStones) { matrix[coord.second][coord.first] = StoneColor.BLACK }
         for (coord in record.initialWhiteStones) { matrix[coord.second][coord.first] = StoneColor.WHITE }
-
         _uiState.update { it.copy(gameRecord = record, boardLayout = matrix.map { it.toList() }) }
     }
 
-    fun rotateRight() {
-        _uiState.update { currentState ->
-            val size = currentState.gameRecord.boardSize
-            val rotated = List(size) { row -> List(size) { col -> currentState.boardLayout[size - 1 - col][row] } }
-            currentState.copy(boardLayout = rotated)
-        }
-    }
+    fun rotateRight() { _uiState.update { currentState -> val size = currentState.gameRecord.boardSize; val rotated = List(size) { row -> List(size) { col -> currentState.boardLayout[size - 1 - col][row] } }; currentState.copy(boardLayout = rotated) } }
+    fun rotateLeft() { _uiState.update { currentState -> val size = currentState.gameRecord.boardSize; val rotated = List(size) { row -> List(size) { col -> currentState.boardLayout[col][size - 1 - row] } }; currentState.copy(boardLayout = rotated) } }
+    fun updateBlackPlayer(name: String) { _uiState.update { it.copy(gameRecord = it.gameRecord.copy(blackPlayer = name)) } }
+    fun updateWhitePlayer(name: String) { _uiState.update { it.copy(gameRecord = it.gameRecord.copy(whitePlayer = name)) } }
+    fun updateNextPlayer(nextPlayer: String) { _uiState.update { it.copy(gameRecord = it.gameRecord.copy(nextPlayer = nextPlayer)) } }
+    fun exportSgf(context: android.content.Context, gameRecord: GameRecord) { viewModelScope.launch { val currentLayout = _uiState.value.boardLayout; val size = gameRecord.boardSize; val rotatedInitialBlack = mutableListOf<Pair<Int, Int>>(); val rotatedInitialWhite = mutableListOf<Pair<Int, Int>>(); for (y in 0 until size) { for (x in 0 until size) { when (currentLayout[y][x]) { StoneColor.BLACK -> rotatedInitialBlack.add(Pair(x, y)); StoneColor.WHITE -> rotatedInitialWhite.add(Pair(x, y)); else -> {} } } }; val rotatedGameRecord = gameRecord.copy(initialBlackStones = rotatedInitialBlack, initialWhiteStones = rotatedInitialWhite); val sgfWriter = SgfWriter(context); val result = sgfWriter.saveSgfFileAutoNamed(sgfWriter.generateSgfString(rotatedGameRecord)); result.onSuccess { toastMessage = "保存完了: ${it.name}" }.onFailure { toastMessage = "保存に失敗しました" } } }
 
-    fun rotateLeft() {
-        _uiState.update { currentState ->
-            val size = currentState.gameRecord.boardSize
-            val rotated = List(size) { row -> List(size) { col -> currentState.boardLayout[col][size - 1 - row] } }
-            currentState.copy(boardLayout = rotated)
-        }
-    }
-
-    fun updateBlackPlayer(name: String) {
-        _uiState.update { it.copy(gameRecord = it.gameRecord.copy(blackPlayer = name)) }
-    }
-
-    fun updateWhitePlayer(name: String) {
-        _uiState.update { it.copy(gameRecord = it.gameRecord.copy(whitePlayer = name)) }
-    }
-
-    fun updateNextPlayer(nextPlayer: String) {
-        _uiState.update { it.copy(gameRecord = it.gameRecord.copy(nextPlayer = nextPlayer)) }
-    }
-
-    fun exportSgf(context: android.content.Context, gameRecord: GameRecord) {
-        viewModelScope.launch {
-            val currentLayout = _uiState.value.boardLayout
-            val size = gameRecord.boardSize
-            val rotatedInitialBlack = mutableListOf<Pair<Int, Int>>()
-            val rotatedInitialWhite = mutableListOf<Pair<Int, Int>>()
-            for (y in 0 until size) {
-                for (x in 0 until size) {
-                    when (currentLayout[y][x]) {
-                        StoneColor.BLACK -> rotatedInitialBlack.add(Pair(x, y))
-                        StoneColor.WHITE -> rotatedInitialWhite.add(Pair(x, y))
-                        else -> {}
-                    }
-                }
-            }
-            val rotatedGameRecord = gameRecord.copy(initialBlackStones = rotatedInitialBlack, initialWhiteStones = rotatedInitialWhite)
-            val sgfWriter = SgfWriter(context)
-            val result = sgfWriter.saveSgfFileAutoNamed(sgfWriter.generateSgfString(rotatedGameRecord))
-            result.onSuccess { toastMessage = "保存完了: ${it.name}" }.onFailure { toastMessage = "保存に失敗しました" }
-        }
+    override fun onCleared() {
+        super.onCleared()
+        lastSourceMat?.release()
     }
 }

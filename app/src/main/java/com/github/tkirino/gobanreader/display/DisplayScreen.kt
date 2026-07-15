@@ -88,17 +88,19 @@ fun DisplayScreen(
 
             // 2. 中央：碁盤
             // DisplayScreen.kt の中で
-                    if (viewModel.debugWarpedBoard != null) {
-                        Image(
-                            bitmap = viewModel.debugWarpedBoard!!.asImageBitmap(),
-                            contentDescription = "デバッグ用：切り出した盤面"
-                        )
-                    } else {
-                        GoBoard(
-                            boardMatrix = uiState.boardLayout, // uiStateのboardLayoutを渡す
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
+            //
+            //       if (viewModel.debugWarpedBoard != null) {
+            //
+            //            Image(
+            //                bitmap = viewModel.debugWarpedBoard!!.asImageBitmap(),
+            //                contentDescription = "デバッグ用：切り出した盤面"
+            //            )
+            //        } else {
+                    GoBoard(
+                        boardMatrix = uiState.boardLayout, // uiStateのboardLayoutを渡す
+                        modifier = Modifier.fillMaxWidth()
+                    )
+            //  }
 
 
             Spacer(modifier = Modifier.weight(1f))
