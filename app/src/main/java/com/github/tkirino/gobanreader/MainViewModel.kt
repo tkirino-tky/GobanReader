@@ -16,7 +16,6 @@ import com.github.tkirino.gobanreader.utility.GeometryUtils
 import com.github.tkirino.gobanreader.vision.BoardCornerDetector
 import com.github.tkirino.gobanreader.vision.BoardRectifier
 import com.github.tkirino.gobanreader.vision.GridLineDetector
-import com.github.tkirino.gobanreader.vision.GuidedBoardDetector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,50 +29,35 @@ import org.opencv.imgcodecs.Imgcodecs
 import org.opencv.imgproc.Imgproc
 import java.io.File
 
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(ReaderUiState())
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
-
     var toastMessage by mutableStateOf<String?>(null)
-
-    // 調整画面用の状態
     var adjustmentBitmap: android.graphics.Bitmap? = null
     var lastDetectionResult: List<Point>? = null
     private var lastSourceMat: Mat? = null
 
-    init {
-        if (BuildConfig.DEBUG) {
-            loadDummySgf()
-        }
-    }
-
-    // 撮影・調整フロー: 画像読み込みと初期検出
     fun loadPhotoForAdjustment(file: File) {
         lastSourceMat?.release()
         val src = Imgcodecs.imread(file.absolutePath)
         lastSourceMat = src
 
-        val grayMat = Mat()
-        Imgproc.cvtColor(src, grayMat, Imgproc.COLOR_BGR2GRAY)
+        // ★GuidedBoardDetectorを廃止し、BoardCornerDetectorに統合
+        val detector = BoardCornerDetector()
+        val result = detector.detect(getApplication(), src)
 
-        val guideRect = GeometryUtils.calculateGuideRect(src.cols().toDouble(), src.rows().toDouble())
-        val cvRect = Rect(guideRect.x.toInt(), guideRect.y.toInt(), guideRect.width.toInt(), guideRect.height.toInt())
-
-        val detector = GuidedBoardDetector(getApplication(), cvRect)
-        val detected = detector.detectCorners(grayMat)
-
-        this.lastDetectionResult = detected ?: getFallbackCorners(guideRect)
+        this.lastDetectionResult = if (result.found) {
+            result.corners
+        } else {
+            val guideRect = GeometryUtils.calculateGuideRect(src.cols().toDouble(), src.rows().toDouble())
+            getFallbackCorners(Rect(guideRect.x.toInt(), guideRect.y.toInt(), guideRect.width.toInt(), guideRect.height.toInt()))
+        }
 
         val bitmap = android.graphics.Bitmap.createBitmap(src.cols(), src.rows(), android.graphics.Bitmap.Config.ARGB_8888)
         Utils.matToBitmap(src, bitmap)
         this.adjustmentBitmap = bitmap
-
-        grayMat.release()
     }
-
-    // 調整フロー: ユーザー確定後に補正とGrid検出を行う
-    // 調整フロー: ユーザー確定後に補正とGrid検出を行う
-    // 調整フロー: ユーザー確定後に補正とGrid検出を行う
     fun processWithCorners(corners: List<Point>) {
         val src = lastSourceMat ?: return
 
