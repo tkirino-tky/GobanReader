@@ -48,18 +48,18 @@ fun App() {
             )
         }
         composable<Route.Corner> {
-            // ViewModel からロード済みの Bitmap と検出結果を取得
+            val readerViewModel: MainViewModel = viewModel()
             val bitmap = readerViewModel.adjustmentBitmap
-            val detection = readerViewModel.lastDetectionResult
+            // 前日までの lastDetectionResult は保持しつつ、新しいプロパティを使用
 
-            if (bitmap != null && detection != null) {
+            if (bitmap != null) {
                 CornerScreen(
                     bitmap = bitmap,
-                    initialDetection = detection,
+                    initialDetection = readerViewModel.initialCorners,
+                    rawDetection = readerViewModel.rawCorners,
                     onConfirmed = { corners ->
-                        // 3. 確定した座標で処理を実行して結果画面へ
                         readerViewModel.processWithCorners(corners)
-                        navController.navigate(Route.Display)
+                        navController.navigate(route = "display_route")
                     }
                 )
             }
