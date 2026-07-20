@@ -45,32 +45,33 @@ class BoardCornerDetector {
             return DetectionResult(emptyList(), false)
         }
 
-        // 4. approxPolyDP
+        // 5. 精緻化をバイパスし、近似された生コーナーをそのまま使用する
         val contour2f = MatOfPoint2f(*boardContour.toArray())
         val peri = Imgproc.arcLength(contour2f, true)
         val approx = MatOfPoint2f()
         Imgproc.approxPolyDP(contour2f, approx, 0.02 * peri, true)
-
-        if (approx.rows() != 4) {
-            gray.release(); blurred.release(); edged.release(); hierarchy.release()
-            return DetectionResult(emptyList(), false)
-        }
-
-        // 5. 精緻化
-        val contourPoints = boardContour.toArray().toList()
         val roughCorners = approx.toList()
-        val refinerResult = RobustCornerRefiner.refineBoardCorners(contourPoints, roughCorners, trimPixels = 30.0)
 
+        // 5. 精緻化をバイパスし、近似された生コーナーをそのまま使用する（一時的テスト用）
+        // テストのために改変　後に削除し、下のコメントアウトの部分を復活
         gray.release()
         blurred.release()
         edged.release()
         hierarchy.release()
 
-        val refinedCorners = refinerResult.refinedCorners
-        return if (refinedCorners.any { it == null }) {
+        // roughCornersが十分に得られているかチェックして返す
+        return if (roughCorners.size != 4) {
             DetectionResult(emptyList(), false)
         } else {
-            DetectionResult(refinedCorners.filterNotNull(), true)
+            DetectionResult(roughCorners, true)
         }
+
+     // 5. 精緻化をバイパスし、近似された生コーナーをそのまま使用する（一時的テスト用）
+     //   val refinedCorners = refinerResult.refinedCorners
+     //   return if (refinedCorners.any { it == null }) {
+     //       DetectionResult(emptyList(), false)
+     //   } else {
+     //       DetectionResult(refinedCorners.filterNotNull(), true)
+     //   }
     }
 }

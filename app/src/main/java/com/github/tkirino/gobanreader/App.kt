@@ -16,9 +16,10 @@ import kotlinx.serialization.Serializable
 @Composable
 fun App() {
     val readerViewModel: MainViewModel = viewModel()
-    val readerUiState by readerViewModel.uiState.collectAsState()
-
+    // ★ここが重要：NavHostの外で一度だけ取得し、すべての composable から参照可能にする
+    val uiState by readerViewModel.uiState.collectAsState()
     val navController = rememberNavController()
+
     NavHost(
         navController = navController,
         startDestination = Route.Settings
@@ -28,38 +29,31 @@ fun App() {
                 viewModel = readerViewModel,
                 onBlackPlayerChanged = { name -> readerViewModel.updateBlackPlayer(name) },
                 onWhitePlayerChanged = { name -> readerViewModel.updateWhitePlayer(name) },
-                onGetGobanClick = {
-                    navController.navigate(Route.Camera)
-                },
-                onHistoryClick = {
-                    navController.navigate(Route.History)
-                }
+                onGetGobanClick = { navController.navigate(Route.Camera) },
+                onHistoryClick = { navController.navigate(Route.History) }
             )
         }
         composable<Route.Camera> {
             CameraScreen(
                 onStartReadingClick = { file ->
-                    // 1. ビットマップを ViewModel にロード（ViewModelに実装が必要です）
                     readerViewModel.loadPhotoForAdjustment(file)
-                    // 2. 調整画面へ遷移
                     navController.navigate(Route.Corner)
                 },
                 onBackClick = { navController.popBackStack() }
             )
         }
         composable<Route.Corner> {
-            val readerViewModel: MainViewModel = viewModel()
-            val bitmap = readerViewModel.adjustmentBitmap
-            // 前日までの lastDetectionResult は保持しつつ、新しいプロパティを使用
+            // ★ここで外側の uiState を参照すれば、赤線は消えます
+            val bitmap = uiState.adjustmentBitmap
 
             if (bitmap != null) {
                 CornerScreen(
                     bitmap = bitmap,
-                    initialDetection = readerViewModel.initialCorners,
-                    rawDetection = readerViewModel.rawCorners,
+                    initialCorners = uiState.initialCorners,
+                    rawDetection = uiState.rawCorners,
                     onConfirmed = { corners ->
                         readerViewModel.processWithCorners(corners)
-                        navController.navigate(route = "display_route")
+                        navController.navigate(Route.Display)
                     }
                 )
             }
@@ -67,9 +61,7 @@ fun App() {
         composable<Route.Display> {
             DisplayScreen(
                 readerViewModel,
-                onBackClick = {
-                    navController.navigate(Route.Settings)
-                }
+                onBackClick = { navController.navigate(Route.Settings) }
             )
         }
     }

@@ -160,9 +160,30 @@ class GridLineDetector {
 
     private fun colSum(mat: Mat, col: Int): Double {
         var sum = 0.0
-        val buf = FloatArray(mat.rows())
-        mat.get(0, col, buf)
-        for (v in buf) sum += abs(v.toDouble())
+        val rows = mat.rows()
+        val cols = mat.cols()
+        val buf = FloatArray(cols)
+
+        // 許容する最大傾き（ピクセル単位）。上下端の間で何ピクセルまでのズレを許容するか
+        // ここでは各行において左右 ±1 ピクセル程度の揺らぎを許容する例
+        val maxOffset = 1
+
+        for (r in 0 until rows) {
+            mat.get(r, 0, buf)
+            var bestValForThisRow = 0.0
+
+            // col を中心に -maxOffset から +maxOffset の範囲で最も強い値（あるいは平均・合計）を探す
+            for (offset in -maxOffset..maxOffset) {
+                val c = col + offset
+                if (c in 0 until cols) {
+                    val v = abs(buf[c].toDouble())
+                    if (v > bestValForThisRow) {
+                        bestValForThisRow = v
+                    }
+                }
+            }
+            sum += bestValForThisRow
+        }
         return sum
     }
 
