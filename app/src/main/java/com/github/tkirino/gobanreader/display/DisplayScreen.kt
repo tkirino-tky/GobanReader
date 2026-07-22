@@ -24,19 +24,18 @@ fun DisplayScreen(
     LaunchedEffect(viewModel.toastMessage) {
         viewModel.toastMessage?.let { message ->
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-
             viewModel.toastMessage = null
         }
     }
 
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
-    LaunchedEffect(Unit) {
-        viewModel.loadDummySgf()
-    }
+    // ※もし「実写の解析フロー」を通らずに直接ここに来た場合のフォールバック等が必要でなければ、
+    //   この LaunchedEffect(Unit) { viewModel.loadDummySgf() } は削除またはコメントアウトします。
+    //   （実写の解析結果を優先させるため、ここでは外しています）
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Goban Reader - Reading") }) }
+        topBar = { TopAppBar(title = { Text("Goban Reader - 解析結果表示") }) }
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -46,15 +45,22 @@ fun DisplayScreen(
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // ローディング中や、状態に応じたテキスト表示
+            val statusText = if (uiState.isLoading) {
+                "画像を解析中..."
+            } else {
+                "解析完了（白石/黒石の配置を表示中）"
+            }
+
             Text(
-                text = if (uiState.gameRecord != null) "SGF読み込み成功！" else "データを読み込み中...",
+                text = statusText,
                 fontSize = 14.sp,
-                modifier = Modifier.fillMaxWidth().height(80.dp)
+                modifier = Modifier.fillMaxWidth().height(40.dp)
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // 古いデバッグコードを削除し、GoBoardのみにする
+            // MainViewModel の processWithCorners 等で更新された実データの boardLayout を GoBoard に渡す
             GoBoard(
                 boardMatrix = uiState.boardLayout,
                 modifier = Modifier.fillMaxWidth()

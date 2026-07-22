@@ -12,6 +12,7 @@ import com.github.tkirino.gobanreader.export.SgfWriter
 import com.github.tkirino.gobanreader.model.GameRecord
 import com.github.tkirino.gobanreader.model.ReaderUiState
 import com.github.tkirino.gobanreader.model.StoneColor
+import com.github.tkirino.gobanreader.stones.StoneDetector
 import com.github.tkirino.gobanreader.utility.GeometryUtils
 import com.github.tkirino.gobanreader.vision.BoardCornerDetector
 import com.github.tkirino.gobanreader.vision.BoardRectifier
@@ -64,22 +65,58 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun processWithCorners(corners: List<Point>) {
         val src = lastSourceMat ?: return
 
-        _uiState.update { it.copy(initialCorners = corners) }
+        viewModelScope.launch(Dispatchers.Default) {
+            try {
+                _uiState.update { it.copy(initialCorners = corners, isLoading = true) }
 
-        val rectifiedMat = BoardRectifier.rectify(src, corners)
-        val gridDetector = GridLineDetector()
-        val gray = Mat()
-        Imgproc.cvtColor(rectifiedMat, gray, Imgproc.COLOR_BGR2GRAY)
+                val rectifiedMat = BoardRectifier.rectify(src, corners)
+                val gridDetector = GridLineDetector()
+                val gray = Mat()
+                Imgproc.cvtColor(rectifiedMat, gray, Imgproc.COLOR_BGR2GRAY)
 
-        val horizontal = gridDetector.detectGridLines(gray, GridLineDetector.Axis.HORIZONTAL)
-        val vertical = gridDetector.detectGridLines(gray, GridLineDetector.Axis.VERTICAL)
+                val horizontal = gridDetector.detectGridLines(gray, GridLineDetector.Axis.HORIZONTAL)
+                val vertical = gridDetector.detectGridLines(gray, GridLineDetector.Axis.VERTICAL)
 
-        if (horizontal != null && vertical != null) {
-            Log.d("MainViewModel", "罫線検出成功: H=${horizontal.spacing}, V=${vertical.spacing}")
+                if (horizontal != null && vertical != null) {
+                    Log.d("MainViewModel", "罫線検出成功: H=${horizontal.spacing}, V=${vertical.spacing}")
+
+                    // 19×19 の交点グリッドを生成
+                    // 19×19 の交点グリッドを生成（例：列方向を反転させる場合）
+                    val geometryGrid = Array(19) { r ->
+                        Array(19) { c ->
+                            val x = vertical.positions.getOrNull(18 - c) ?: 0.0 // 列を反転
+                            val y = horizontal.positions.getOrNull(r) ?: 0.0
+                            Point(x, y)
+                        }
+                    }
+
+                    // StoneDetector による石の判定実行
+                    val stoneDetector = StoneDetector()
+                    val stoneResult = stoneDetector.detectStones(rectifiedMat, geometryGrid)
+                    val blackCount = stoneResult.sumOf { row -> row.count { it == StoneColor.BLACK } }
+                    val whiteCount = stoneResult.sumOf { row -> row.count { it == StoneColor.WHITE } }
+                    Log.d("StoneDetectorDebug", "検出結果 -> 黒石: $blackCount 個, 白石: $whiteCount 個")
+
+                    // 解析結果を UiState の boardLayout に反映
+                    _uiState.update { currentState ->
+                        currentState.copy(
+                            isLoading = false,
+                            boardLayout = stoneResult
+                        )
+                    }
+                    toastMessage = "碁盤の解析が完了しました"
+                } else {
+                    _uiState.update { it.copy(isLoading = false) }
+                    toastMessage = "罫線の検出に失敗しました"
+                }
+
+                gray.release()
+                rectifiedMat.release()
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isLoading = false) }
+                toastMessage = "解析エラー: ${e.localizedMessage}"
+            }
         }
-
-        gray.release()
-        rectifiedMat.release()
     }
 
     private fun getFallbackCorners(guideRect: Rect): List<Point> {
@@ -95,8 +132,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun processCapturedPhoto(file: File) {
         loadPhotoForAdjustment(file)
-        // 非同期処理完了後に値を参照するため、必要に応じてコールバック等への変更が必要ですが、
-        // 現状の構造ではこの関数は一度整理を保留すべき箇所です
     }
 
     fun updateBlackPlayer(name: String) {
@@ -135,18 +170,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun rotateRight() {
+        Log.d("MainViewModelDebug", "rotateRight が呼ばれました")
         _uiState.update { currentState ->
             val size = currentState.gameRecord.boardSize
-            val rotated = List(size) { row -> List(size) { col -> currentState.boardLayout[size - 1 - col][row] } }
-            currentState.copy(boardLayout = rotated)
+            Log.d("MainViewModelDebug", "rotateRight: boardSize = $size, boardLayout.size = ${currentState.boardLayout.size}")
+            try {
+                val rotated = List(size) { row -> List(size) { col -> currentState.boardLayout[size - 1 - col][row] } }
+                currentState.copy(boardLayout = rotated)
+            } catch (e: Exception) {
+                Log.e("MainViewModelDebug", "rotateRight 内部でエラー発生", e)
+                currentState
+            }
         }
     }
 
     fun rotateLeft() {
+        Log.d("MainViewModelDebug", "rotateLeft が呼ばれました")
         _uiState.update { currentState ->
             val size = currentState.gameRecord.boardSize
-            val rotated = List(size) { row -> List(size) { col -> currentState.boardLayout[col][size - 1 - row] } }
-            currentState.copy(boardLayout = rotated)
+            Log.d("MainViewModelDebug", "rotateLeft: boardSize = $size, boardLayout.size = ${currentState.boardLayout.size}")
+            try {
+                val rotated = List(size) { row -> List(size) { col -> currentState.boardLayout[col][size - 1 - row] } }
+                currentState.copy(boardLayout = rotated)
+            } catch (e: Exception) {
+                Log.e("MainViewModelDebug", "rotateLeft 内部でエラー発生", e)
+                currentState
+            }
         }
     }
 
@@ -172,5 +221,3 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 }
-
-
