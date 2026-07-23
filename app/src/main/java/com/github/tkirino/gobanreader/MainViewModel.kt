@@ -37,6 +37,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var toastMessage by mutableStateOf<String?>(null)
     private var lastSourceMat: Mat? = null
 
+    fun updateHandicap(handicap: Int) {
+        _uiState.value = _uiState.value.copy(
+            gameRecord = _uiState.value.gameRecord.copy(handicap = handicap)
+        )
+    }
+
+    fun updateKomi(komi: Float) {
+        _uiState.value = _uiState.value.copy(
+            gameRecord = _uiState.value.gameRecord.copy(komi = komi)
+        )
+    }
+
     fun loadPhotoForAdjustment(file: File) {
         viewModelScope.launch(Dispatchers.Default) {
             val src = Imgcodecs.imread(file.absolutePath)

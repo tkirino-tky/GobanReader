@@ -3,17 +3,16 @@ package com.github.tkirino.gobanreader.camera
 import android.Manifest
 import android.media.MediaActionSound
 import android.util.Log
-import android.util.Rational
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
-import androidx.camera.core.UseCaseGroup
-import androidx.camera.core.ViewPort
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -22,10 +21,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -52,8 +55,17 @@ fun CameraScreen(
     val imageCapture = remember { ImageCapture.Builder().build() }
     val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
 
+    // カメラインスタンスとズーム倍率の状態管理
+    var cameraInstance by remember { mutableStateOf<Camera?>(null) }
+    var zoomRatio by remember { mutableStateOf(1.0f) }
+
     LaunchedEffect(Unit) {
         if (!cameraPermissionState.status.isGranted) cameraPermissionState.launchPermissionRequest()
+    }
+
+    // スライダーで zoomRatio が変わったときにカメラのズームをリアルタイムに更新する
+    LaunchedEffect(zoomRatio, cameraInstance) {
+        cameraInstance?.cameraControl?.setZoomRatio(zoomRatio)
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -66,27 +78,30 @@ fun CameraScreen(
                         cameraProviderFuture.addListener({
                             val cameraProvider = cameraProviderFuture.get()
 
-                            val viewPort = ViewPort.Builder(
-                                Rational(this.width, this.height),
-                                this.display.rotation
-                            ).build()
-
-                            val preview = Preview.Builder().build().also { it.setSurfaceProvider(surfaceProvider) }
-
-                            val useCaseGroup = UseCaseGroup.Builder()
-                                .addUseCase(preview)
-                                .addUseCase(imageCapture)
-                                .setViewPort(viewPort)
-                                .build()
+                            val preview = Preview.Builder().build().also {
+                                it.setSurfaceProvider(surfaceProvider)
+                            }
 
                             cameraProvider.unbindAll()
-                            cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, useCaseGroup)
+
+                            // カメラをバインドし、返されたカメラインスタンスを保持する
+                            val camera = cameraProvider.bindToLifecycle(
+                                lifecycleOwner,
+                                CameraSelector.DEFAULT_BACK_CAMERA,
+                                preview,
+                                imageCapture
+                            )
+                            cameraInstance = camera
+
+                            // 起動時の初期ズームを適用
+                            camera.cameraControl.setZoomRatio(zoomRatio)
                         }, ContextCompat.getMainExecutor(ctx))
                     }
                 }
             )
         }
 
+        // ガイドフレーム
         Box(
             modifier = Modifier
                 .fillMaxWidth(0.8f)
@@ -94,6 +109,27 @@ fun CameraScreen(
                 .align(Alignment.Center)
                 .border(2.dp, Color.White)
         )
+
+        // 画面下部にズーム調整用のスライダーを配置（0.5f 〜 3.0f）
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 32.dp, vertical = 130.dp)
+                .fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = String.format("倍率: %.1f倍", zoomRatio),
+                color = Color.White
+            )
+            Slider(
+                value = zoomRatio,
+                onValueChange = { newZoom ->
+                    zoomRatio = newZoom
+                },
+                valueRange = 0.5f..3.0f
+            )
+        }
 
         Button(onClick = onBackClick, modifier = Modifier.align(Alignment.TopStart).padding(20.dp)) {
             Text("戻る")
