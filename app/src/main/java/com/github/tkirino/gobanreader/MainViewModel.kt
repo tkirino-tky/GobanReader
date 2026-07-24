@@ -57,9 +57,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             val result = BoardCornerDetector().detect(getApplication(), src)
 
+            // 実際の画像サイズ（src.cols(), src.rows()）を基準にガイド矩形を算出
             val guideRect = GeometryUtils.calculateGuideRect(src.cols().toDouble(), src.rows().toDouble())
-            val detectedCorners = if (result.found) result.corners
-            else getFallbackCorners(Rect(guideRect.x.toInt(), guideRect.y.toInt(), guideRect.width.toInt(), guideRect.height.toInt()))
+
+            val detectedCorners = if (result.found && result.corners.size == 4) {
+                result.corners
+            } else {
+                getFallbackCorners(guideRect)
+            }
 
             val bitmap = android.graphics.Bitmap.createBitmap(src.cols(), src.rows(), android.graphics.Bitmap.Config.ARGB_8888)
             Utils.matToBitmap(src, bitmap)
@@ -72,6 +77,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
+    }
+
+    private fun getFallbackCorners(guideRect: Rect): List<Point> {
+        // ガイドフレームの幅の少し内側（約7%内側）をコーナーとして計算する元のロジック
+        val paddingX = guideRect.width * 0.07
+        val paddingY = guideRect.height * 0.07
+        return listOf(
+            Point(guideRect.x + paddingX, guideRect.y + paddingY),
+            Point(guideRect.x + guideRect.width - paddingX, guideRect.y + paddingY),
+            Point(guideRect.x + guideRect.width - paddingX, guideRect.y + guideRect.height - paddingY),
+            Point(guideRect.x + paddingX, guideRect.y + guideRect.height - paddingY)
+        )
     }
 
     fun processWithCorners(corners: List<Point>) {
@@ -129,17 +146,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 toastMessage = "解析エラー: ${e.localizedMessage}"
             }
         }
-    }
-
-    private fun getFallbackCorners(guideRect: Rect): List<Point> {
-        val paddingX = guideRect.width * 0.07
-        val paddingY = guideRect.height * 0.07
-        return listOf(
-            Point(guideRect.x + paddingX, guideRect.y + paddingY),
-            Point(guideRect.x + guideRect.width - paddingX, guideRect.y + paddingY),
-            Point(guideRect.x + guideRect.width - paddingX, guideRect.y + guideRect.height - paddingY),
-            Point(guideRect.x + paddingX, guideRect.y + guideRect.height - paddingY)
-        )
     }
 
     fun processCapturedPhoto(file: File) {

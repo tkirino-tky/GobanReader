@@ -3,16 +3,19 @@ package com.github.tkirino.gobanreader.camera
 import android.Manifest
 import android.media.MediaActionSound
 import android.util.Log
-import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCaseGroup
+import androidx.camera.core.ViewPort
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,18 +23,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
@@ -40,6 +40,7 @@ import androidx.core.content.ContextCompat
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
+import android.util.Rational
 import java.io.File
 
 @OptIn(ExperimentalPermissionsApi::class)
@@ -55,17 +56,8 @@ fun CameraScreen(
     val imageCapture = remember { ImageCapture.Builder().build() }
     val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
 
-    // カメラインスタンスとズーム倍率の状態管理
-    var cameraInstance by remember { mutableStateOf<Camera?>(null) }
-    var zoomRatio by remember { mutableStateOf(1.0f) }
-
     LaunchedEffect(Unit) {
         if (!cameraPermissionState.status.isGranted) cameraPermissionState.launchPermissionRequest()
-    }
-
-    // スライダーで zoomRatio が変わったときにカメラのズームをリアルタイムに更新する
-    LaunchedEffect(zoomRatio, cameraInstance) {
-        cameraInstance?.cameraControl?.setZoomRatio(zoomRatio)
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -78,30 +70,27 @@ fun CameraScreen(
                         cameraProviderFuture.addListener({
                             val cameraProvider = cameraProviderFuture.get()
 
-                            val preview = Preview.Builder().build().also {
-                                it.setSurfaceProvider(surfaceProvider)
-                            }
+                            val viewPort = ViewPort.Builder(
+                                Rational(this.width, this.height),
+                                this.display.rotation
+                            ).build()
+
+                            val preview = Preview.Builder().build().also { it.setSurfaceProvider(surfaceProvider) }
+
+                            val useCaseGroup = UseCaseGroup.Builder()
+                                .addUseCase(preview)
+                                .addUseCase(imageCapture)
+                                .setViewPort(viewPort)
+                                .build()
 
                             cameraProvider.unbindAll()
-
-                            // カメラをバインドし、返されたカメラインスタンスを保持する
-                            val camera = cameraProvider.bindToLifecycle(
-                                lifecycleOwner,
-                                CameraSelector.DEFAULT_BACK_CAMERA,
-                                preview,
-                                imageCapture
-                            )
-                            cameraInstance = camera
-
-                            // 起動時の初期ズームを適用
-                            camera.cameraControl.setZoomRatio(zoomRatio)
+                            cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, useCaseGroup)
                         }, ContextCompat.getMainExecutor(ctx))
                     }
                 }
             )
         }
 
-        // ガイドフレーム
         Box(
             modifier = Modifier
                 .fillMaxWidth(0.8f)
@@ -110,49 +99,49 @@ fun CameraScreen(
                 .border(2.dp, Color.White)
         )
 
-        // 画面下部にズーム調整用のスライダーを配置（0.5f 〜 3.0f）
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(horizontal = 32.dp, vertical = 130.dp)
-                .fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = String.format("倍率: %.1f倍", zoomRatio),
-                color = Color.White
-            )
-            Slider(
-                value = zoomRatio,
-                onValueChange = { newZoom ->
-                    zoomRatio = newZoom
-                },
-                valueRange = 0.5f..3.0f
-            )
-        }
-
         Button(onClick = onBackClick, modifier = Modifier.align(Alignment.TopStart).padding(20.dp)) {
             Text("戻る")
         }
 
-        Button(
-            onClick = {
-                val photoFile = File(context.cacheDir, "goban_photo.jpg")
-                val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
-                sound.play(MediaActionSound.SHUTTER_CLICK)
+        // シャッターボタン（標準カメラ風の二重リングデザイン）
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 48.dp)
+                .size(80.dp)
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = {
+                            val photoFile = File(context.cacheDir, "goban_photo.jpg")
+                            val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
+                            sound.play(MediaActionSound.SHUTTER_CLICK)
 
-                imageCapture.takePicture(outputOptions, ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageSavedCallback {
-                    override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                        onStartReadingClick(photoFile)
-                    }
-                    override fun onError(e: ImageCaptureException) {
-                        Log.e("CameraScreen", "撮影失敗: ${e.message}")
-                    }
-                })
-            },
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp).size(76.dp),
-            shape = CircleShape,
-            colors = ButtonDefaults.buttonColors(containerColor = Color.White)
-        ) {}
+                            imageCapture.takePicture(outputOptions, ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageSavedCallback {
+                                val currentContext = context
+                                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                                    onStartReadingClick(photoFile)
+                                }
+                                override fun onError(e: ImageCaptureException) {
+                                    Log.e("CameraScreen", "撮影失敗: ${e.message}")
+                                }
+                            })
+                        }
+                    )
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.8f),
+                    radius = size.minDimension / 2f,
+                    style = Stroke(width = 6.dp.toPx())
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .background(Color.White, CircleShape)
+            )
+        }
     }
 }

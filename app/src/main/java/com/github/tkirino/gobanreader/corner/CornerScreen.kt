@@ -41,11 +41,9 @@ import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgcodecs.Imgcodecs
 import org.opencv.imgproc.Imgproc
-import java.io.File
 import android.content.ContentValues
 import android.provider.MediaStore
 import android.os.Environment
-import java.io.OutputStream
 
 @Composable
 fun CornerScreen(
@@ -90,37 +88,39 @@ fun CornerScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
-                        // デバッグ確認中はドラッグ操作を受け付けないようにする
                         if (!isDebugging) {
-                            detectDragGestures { change, dragAmount ->
-                                val touchPoint = change.position
-                                val rawX = (touchPoint.x.toDouble() - offsetX) / scale
-                                val rawY = (touchPoint.y.toDouble() - offsetY) / scale
+                            var activeIndex: Int? = null
 
-                                val closestIndex = corners.indices.minByOrNull { i ->
-                                    val c = corners[i]
-                                    Math.hypot(c.x - rawX, c.y - rawY)
-                                } ?: return@detectDragGestures
+                            detectDragGestures(
+                                onDragStart = { touchPoint ->
+                                    val rawX = (touchPoint.x.toDouble() - offsetX) / scale
+                                    val rawY = (touchPoint.y.toDouble() - offsetY) / scale
 
-                                if (Math.hypot(
-                                        corners[closestIndex].x - rawX,
-                                        corners[closestIndex].y - rawY
-                                    ) < 100.0
-                                ) {
+                                    // タップされた位置に最も近いコーナーを操作対象として選択
+                                    activeIndex = corners.indices.minByOrNull { i ->
+                                        val c = corners[i]
+                                        Math.hypot(c.x - rawX, c.y - rawY)
+                                    }
+                                },
+                                onDrag = { change, dragAmount ->
+                                    val index = activeIndex ?: return@detectDragGestures
+
+                                    // 指で隠れないよう、画面上の移動量(dragAmount)を画像上の移動量に変換して加算
+                                    val deltaX = dragAmount.x.toDouble() / scale
+                                    val deltaY = dragAmount.y.toDouble() / scale
+
                                     val newCorners = corners.toMutableList()
-                                    newCorners[closestIndex] = Point(
-                                        (corners[closestIndex].x + dragAmount.x.toDouble() / scale).coerceIn(
-                                            0.0,
-                                            bitmapWidth.toDouble()
-                                        ),
-                                        (corners[closestIndex].y + dragAmount.y.toDouble() / scale).coerceIn(
-                                            0.0,
-                                            bitmapHeight.toDouble()
-                                        )
+                                    val current = newCorners[index]
+
+                                    newCorners[index] = Point(
+                                        (current.x + deltaX).coerceIn(0.0, bitmapWidth.toDouble()),
+                                        (current.y + deltaY).coerceIn(0.0, bitmapHeight.toDouble())
                                     )
                                     corners = newCorners
-                                }
-                            }
+                                },
+                                onDragEnd = { activeIndex = null },
+                                onDragCancel = { activeIndex = null }
+                            )
                         }
                     }
             ) {
@@ -139,7 +139,7 @@ fun CornerScreen(
                     )
                 }
 
-                // ★ 「この範囲で確定」が押された後の5秒間のみ、拡張された赤枠を画面に描画して表示する
+                // 「この範囲で確定」が押された後の5秒間のみ、拡張された赤枠を表示
                 if (isDebugging) {
                     val currentExpanded = tempExpandedCorners
                     if (currentExpanded != null && currentExpanded.size == 4) {
@@ -191,25 +191,19 @@ fun CornerScreen(
         val context = androidx.compose.ui.platform.LocalContext.current
         Button(
             onClick = {
-                // 1. デバッグ中かどうかにかかわらず、必ず拡張座標を計算する
                 val expanded = CornerUtils.calculateExpandedCorners(corners)
                 tempExpandedCorners = expanded
-
-                // 2. テスト用に関数を呼び出す（拡張された座標を使ってGridLineDetectorを走らせる）
                 testGridLineDetection(context, bitmap, expanded)
 
                 if (!isDebugging) {
-                    // 3. デバッグ表示モードをONにして赤枠を出現させる
                     isDebugging = true
-
-                    // 4. 5秒間停止したあと、次の画面へ遷移する
                     coroutineScope.launch {
-                        delay(5000L) // 5秒間停止して目視確認
-                        onConfirmed(expanded) // 計算済みの拡張座標をそのまま渡す
+                        delay(5000L)
+                        onConfirmed(expanded)
                     }
                 }
             },
-            enabled = !isDebugging, // 確認中はボタンを無効化
+            enabled = !isDebugging,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(24.dp)
@@ -262,18 +256,14 @@ fun testGridLineDetection(context: Context, originalBitmap: Bitmap, expandedCorn
         }
     }
 
-    // 色空間をRGBに戻す
     Imgproc.cvtColor(warpedColorMat, warpedColorMat, Imgproc.COLOR_RGB2BGR)
 
-    // Androidの MediaStore を使って共有の「Pictures」フォルダに保存する
     val filename = "grid_test_${System.currentTimeMillis()}.png"
-
     val resolver = context.contentResolver
     val contentValues = ContentValues().apply {
         put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
         put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
         put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
-        // Android 10以降では、最初は「ペンディング（書き込み中）」状態にする必要がある
         put(MediaStore.Images.Media.IS_PENDING, 1)
     }
     val imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
@@ -287,18 +277,13 @@ fun testGridLineDetection(context: Context, originalBitmap: Bitmap, expandedCorn
                     val bytes = matOfByte.toArray()
                     stream.write(bytes)
                     stream.flush()
-                    Log.d("GridTest", "画像をPicturesフォルダに書き込みました: ${bytes.size} bytes")
-                } else {
-                    Log.e("GridTest", "imencodeに失敗したか、データが空です")
                 }
                 matOfByte.release()
             }
 
-            // 書き込みが完了したので、ペンディング状態を解除してファイルを有効化する
             contentValues.clear()
             contentValues.put(MediaStore.Images.Media.IS_PENDING, 0)
             resolver.update(uri, contentValues, null, null)
-            Log.d("GridTest", "画像をPicturesフォルダに保存しました: $filename")
 
         } catch (e: Exception) {
             Log.e("GridTest", "ファイルの書き込みに失敗しました", e)
