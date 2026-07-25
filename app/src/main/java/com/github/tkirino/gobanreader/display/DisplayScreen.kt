@@ -3,9 +3,7 @@ package com.github.tkirino.gobanreader.display
 import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -13,6 +11,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.github.tkirino.gobanreader.MainViewModel
+import com.github.tkirino.gobanreader.utility.PreferencesManager
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -30,9 +29,10 @@ fun DisplayScreen(
 
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
-    // ※もし「実写の解析フロー」を通らずに直接ここに来た場合のフォールバック等が必要でなければ、
-    //   この LaunchedEffect(Unit) { viewModel.loadDummySgf() } は削除またはコメントアウトします。
-    //   （実写の解析結果を優先させるため、ここでは外しています）
+    // SGF出力用メールアドレス設定ダイアログの表示状態
+    var showEmailDialog by remember { mutableStateOf(false) }
+    // ダイアログ内の入力フィールド用保持ステート
+    var emailInput by remember { mutableStateOf("") }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Goban Reader - 解析結果表示") }) }
@@ -74,9 +74,50 @@ fun DisplayScreen(
             }
             Spacer(modifier = Modifier.height(12.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                Button(onClick = { viewModel.exportSgf(context, uiState.gameRecord) }) { Text("SGF出力") }
+                Button(onClick = {
+                    // SGF出力ボタンが押されたら、保存済みのメールアドレスを読み込んでダイアログを表示
+                    emailInput = PreferencesManager.getSavedEmail(context)
+                    showEmailDialog = true
+                }) { Text("SGF出力") }
                 Button(onClick = onBackClick) { Text("戻る") }
             }
         }
+    }
+
+    // メールアドレス入力 & SGF出力ダイアログ
+    if (showEmailDialog) {
+        AlertDialog(
+            onDismissRequest = { showEmailDialog = false },
+            title = { Text("SGF出力とメール送信") },
+            text = {
+                Column {
+                    Text("送信先メールアドレスを入力してください。\n(空欄の場合は端末への保存のみ行います)")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = emailInput,
+                        onValueChange = { emailInput = it },
+                        label = { Text("メールアドレス") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showEmailDialog = false
+                        // 入力されたアドレス（空欄なら空文字）をViewModelに渡して実行
+                        viewModel.exportSgf(context, uiState.gameRecord, emailInput)
+                    }
+                ) {
+                    Text("実行")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEmailDialog = false }) {
+                    Text("キャンセル")
+                }
+            }
+        )
     }
 }

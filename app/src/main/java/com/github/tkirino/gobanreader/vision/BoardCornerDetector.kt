@@ -45,33 +45,43 @@ class BoardCornerDetector {
             return DetectionResult(emptyList(), false)
         }
 
-        // 5. 精緻化をバイパスし、近似された生コーナーをそのまま使用する
+        // 4. 4つの頂点に近似
         val contour2f = MatOfPoint2f(*boardContour.toArray())
         val peri = Imgproc.arcLength(contour2f, true)
         val approx = MatOfPoint2f()
         Imgproc.approxPolyDP(contour2f, approx, 0.02 * peri, true)
         val roughCorners = approx.toList()
 
-        // 5. 精緻化をバイパスし、近似された生コーナーをそのまま使用する（一時的テスト用）
-        // テストのために改変　後に削除し、下のコメントアウトの部分を復活
         gray.release()
         blurred.release()
         edged.release()
         hierarchy.release()
 
-        // roughCornersが十分に得られているかチェックして返す
-        return if (roughCorners.size != 4) {
-            DetectionResult(emptyList(), false)
-        } else {
-            DetectionResult(roughCorners, true)
+        if (roughCorners.size != 4) {
+            return DetectionResult(emptyList(), false)
         }
 
-     // 5. 精緻化をバイパスし、近似された生コーナーをそのまま使用する（一時的テスト用）
-     //   val refinedCorners = refinerResult.refinedCorners
-     //   return if (refinedCorners.any { it == null }) {
-     //       DetectionResult(emptyList(), false)
-     //   } else {
-     //       DetectionResult(refinedCorners.filterNotNull(), true)
-     //   }
+        // ★ 5. 検出された4隅の順序を「左上、右上、右下、左下」に確実に並び替える（正規化）
+        val sortedCorners = sortCorners(roughCorners)
+
+        return DetectionResult(sortedCorners, true)
+    }
+
+    /**
+     * 4つのコーナー座標を [左上, 右上, 右下, 左下] の順にソートするヘルパー関数
+     */
+    /**/
+    private fun sortCorners(corners: List<Point>): List<Point> {
+        val sortedByY = corners.sortedBy { it.y }
+        // 上側の2点と下側の2点に分ける
+        val topPoints = sortedByY.take(2).sortedBy { it.x }
+        val bottomPoints = sortedByY.drop(2).sortedBy { it.x }
+
+        val topLeft = topPoints.first()       // Xが小さい方が左上
+        val topRight = topPoints.last()       // Xが大きい方が右上
+        val bottomRight = bottomPoints.last() // Xが大きい方が右下
+        val bottomLeft = bottomPoints.first() // Xが小さい方が左下
+
+        return listOf(topLeft, topRight, bottomRight, bottomLeft)
     }
 }

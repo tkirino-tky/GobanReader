@@ -14,6 +14,7 @@ import com.github.tkirino.gobanreader.model.ReaderUiState
 import com.github.tkirino.gobanreader.model.StoneColor
 import com.github.tkirino.gobanreader.stones.StoneDetector
 import com.github.tkirino.gobanreader.utility.GeometryUtils
+import com.github.tkirino.gobanreader.utility.PreferencesManager
 import com.github.tkirino.gobanreader.vision.BoardCornerDetector
 import com.github.tkirino.gobanreader.vision.BoardRectifier
 import com.github.tkirino.gobanreader.vision.GridLineDetector
@@ -27,7 +28,6 @@ import org.opencv.android.Utils
 import org.opencv.core.Mat
 import org.opencv.core.Point
 import org.opencv.core.Rect
-import org.opencv.imgcodecs.Imgcodecs
 import org.opencv.imgproc.Imgproc
 import java.io.File
 
@@ -51,13 +51,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadPhotoForAdjustment(file: File) {
         viewModelScope.launch(Dispatchers.Default) {
-            val src = Imgcodecs.imread(file.absolutePath)
+            // 1. 画像ファイルをBitmapとして読み込み、Exifの回転情報を反映して正立させる
+            val originalBitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+            val rotatedBitmap = rotateBitmapIfNeeded(file.absolutePath, originalBitmap)
+
+            // 2. 正立させたBitmapをOpenCVの Mat に変換する
+            val src = Mat()
+            Utils.bitmapToMat(rotatedBitmap, src)
+
+            // RGBからBGRへ変換
+            Imgproc.cvtColor(src, src, Imgproc.COLOR_RGBA2BGR)
+
             lastSourceMat?.release()
             lastSourceMat = src
 
             val result = BoardCornerDetector().detect(getApplication(), src)
 
-            // 実際の画像サイズ（src.cols(), src.rows()）を基準にガイド矩形を算出
+            // 実際の画像サイズを基準にガイド矩形を算出
             val guideRect = GeometryUtils.calculateGuideRect(src.cols().toDouble(), src.rows().toDouble())
 
             val detectedCorners = if (result.found && result.corners.size == 4) {
@@ -66,12 +76,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 getFallbackCorners(guideRect)
             }
 
-            val bitmap = android.graphics.Bitmap.createBitmap(src.cols(), src.rows(), android.graphics.Bitmap.Config.ARGB_8888)
-            Utils.matToBitmap(src, bitmap)
-
             _uiState.update {
                 it.copy(
-                    adjustmentBitmap = bitmap,
+                    adjustmentBitmap = rotatedBitmap,
                     initialCorners = detectedCorners,
                     rawCorners = detectedCorners
                 )
@@ -79,8 +86,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // Exifの回転情報を読み取ってBitmapを正しく回転させるヘルパー関数
+    private fun rotateBitmapIfNeeded(imagePath: String, bitmap: android.graphics.Bitmap): android.graphics.Bitmap {
+        try {
+            val exif = android.media.ExifInterface(imagePath)
+            val orientation = exif.getAttributeInt(
+                android.media.ExifInterface.TAG_ORIENTATION,
+                android.media.ExifInterface.ORIENTATION_NORMAL
+            )
+            val matrix = android.graphics.Matrix()
+            when (orientation) {
+                android.media.ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+                android.media.ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+                android.media.ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+                else -> return bitmap
+            }
+            return android.graphics.Bitmap.createBitmap(
+                bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true
+            ).also {
+                if (it != bitmap) {
+                    bitmap.recycle()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("MainViewModel", "Exifの読み取りに失敗しました", e)
+            return bitmap
+        }
+    }
+
     private fun getFallbackCorners(guideRect: Rect): List<Point> {
-        // ガイドフレームの幅の少し内側（約7%内側）をコーナーとして計算する元のロジック
         val paddingX = guideRect.width * 0.07
         val paddingY = guideRect.height * 0.07
         return listOf(
@@ -109,11 +143,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (horizontal != null && vertical != null) {
                     Log.d("MainViewModel", "罫線検出成功: H=${horizontal.spacing}, V=${vertical.spacing}")
 
-                    // 19×19 の交点グリッドを生成
-                    // 19×19 の交点グリッドを生成（例：列方向を反転させる場合）
+                    // 19×19 の交点グリッドを生成（余計な反転を削除し、正しい順序でマッピング）
                     val geometryGrid = Array(19) { r ->
                         Array(19) { c ->
-                            val x = vertical.positions.getOrNull(18 - c) ?: 0.0 // 列を反転
+                            val x = vertical.positions.getOrNull(c) ?: 0.0
                             val y = horizontal.positions.getOrNull(r) ?: 0.0
                             Point(x, y)
                         }
@@ -191,7 +224,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         Log.d("MainViewModelDebug", "rotateRight が呼ばれました")
         _uiState.update { currentState ->
             val size = currentState.gameRecord.boardSize
-            Log.d("MainViewModelDebug", "rotateRight: boardSize = $size, boardLayout.size = ${currentState.boardLayout.size}")
             try {
                 val rotated = List(size) { row -> List(size) { col -> currentState.boardLayout[size - 1 - col][row] } }
                 currentState.copy(boardLayout = rotated)
@@ -206,7 +238,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         Log.d("MainViewModelDebug", "rotateLeft が呼ばれました")
         _uiState.update { currentState ->
             val size = currentState.gameRecord.boardSize
-            Log.d("MainViewModelDebug", "rotateLeft: boardSize = $size, boardLayout.size = ${currentState.boardLayout.size}")
             try {
                 val rotated = List(size) { row -> List(size) { col -> currentState.boardLayout[col][size - 1 - row] } }
                 currentState.copy(boardLayout = rotated)
@@ -217,8 +248,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun exportSgf(context: android.content.Context, gameRecord: GameRecord) {
+    // 既存の exportSgf を置き換え
+    fun exportSgf(context: android.content.Context, gameRecord: GameRecord, recipientEmail: String) {
         viewModelScope.launch {
+            // 1. メールアドレスを保存（デフォルトとして記憶）
+            PreferencesManager.saveEmail(context, recipientEmail)
+
             val currentLayout = _uiState.value.boardLayout
             val size = gameRecord.boardSize
             val rotatedInitialBlack = mutableListOf<Pair<Int, Int>>()
@@ -234,8 +269,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             val rotatedGameRecord = gameRecord.copy(initialBlackStones = rotatedInitialBlack, initialWhiteStones = rotatedInitialWhite)
             val sgfWriter = SgfWriter(context)
-            val result = sgfWriter.saveSgfFileAutoNamed(sgfWriter.generateSgfString(rotatedGameRecord))
-            result.onSuccess { toastMessage = "保存完了: ${it.name}" }.onFailure { toastMessage = "保存に失敗しました" }
+            val sgfString = sgfWriter.generateSgfString(rotatedGameRecord)
+            val result = sgfWriter.saveSgfFileAutoNamed(sgfString)
+
+            result.onSuccess { savedFile ->
+                var message = "保存完了: ${savedFile.name}"
+
+                // 2. メールアドレスが入力されている場合はメール送信（インテント起動）を行う
+                if (recipientEmail.isNotBlank()) {
+                    try {
+                        val uri = androidx.core.content.FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            savedFile
+                        )
+                        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                            type = "application/x-go-sgf" // または "text/plain"
+                            putExtra(android.content.Intent.EXTRA_EMAIL, arrayOf(recipientEmail))
+                            putExtra(android.content.Intent.EXTRA_SUBJECT, "GobanReader SGF出力")
+                            putExtra(android.content.Intent.EXTRA_TEXT, "碁盤解析アプリからSGFファイルをお送りします。")
+                            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        // メーラー起動はメインスレッドで実行する必要があるため Context を使って投げる
+                        val chooser = android.content.Intent.createChooser(intent, "SGFファイルをメールで送信").apply {
+                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(chooser)
+                        message += " & メール送信準備完了"
+                    } catch (e: Exception) {
+                        Log.e("MainViewModel", "メール起動失敗", e)
+                        message += " (メール起動に失敗しました)"
+                    }
+                }
+
+                toastMessage = message
+            }.onFailure {
+                toastMessage = "保存に失敗しました"
+            }
         }
     }
 }

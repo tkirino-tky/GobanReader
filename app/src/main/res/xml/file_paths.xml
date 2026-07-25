@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 内部キャッシュ用 -->
+    <cache-path name="shared_sgf_files" path="." />
+
+    <!-- 外部ストレージ（Documentsフォルダを含む公開ストレージ全体）を許可する -->
+    <external-path name="external_storage_root" path="." />
+</paths>
