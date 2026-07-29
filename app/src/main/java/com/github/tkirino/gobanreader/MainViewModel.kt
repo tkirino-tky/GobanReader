@@ -17,7 +17,6 @@ import com.github.tkirino.gobanreader.utility.GeometryUtils
 import com.github.tkirino.gobanreader.utility.PreferencesManager
 import com.github.tkirino.gobanreader.vision.BoardCornerDetector
 import com.github.tkirino.gobanreader.vision.BoardRectifier
-import com.github.tkirino.gobanreader.vision.GridLineDetector
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,23 +50,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadPhotoForAdjustment(file: File) {
         viewModelScope.launch(Dispatchers.Default) {
-            // 1. 画像ファイルをBitmapとして読み込み、Exifの回転情報を反映して正立させる
             val originalBitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
             val rotatedBitmap = rotateBitmapIfNeeded(file.absolutePath, originalBitmap)
 
-            // 2. 正立させたBitmapをOpenCVの Mat に変換する
             val src = Mat()
             Utils.bitmapToMat(rotatedBitmap, src)
-
-            // RGBからBGRへ変換
             Imgproc.cvtColor(src, src, Imgproc.COLOR_RGBA2BGR)
 
             lastSourceMat?.release()
             lastSourceMat = src
 
             val result = BoardCornerDetector().detect(getApplication(), src)
-
-            // 実際の画像サイズを基準にガイド矩形を算出
             val guideRect = GeometryUtils.calculateGuideRect(src.cols().toDouble(), src.rows().toDouble())
 
             val detectedCorners = if (result.found && result.corners.size == 4) {
@@ -86,7 +79,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Exifの回転情報を読み取ってBitmapを正しく回転させるヘルパー関数
     private fun rotateBitmapIfNeeded(imagePath: String, bitmap: android.graphics.Bitmap): android.graphics.Bitmap {
         try {
             val exif = android.media.ExifInterface(imagePath)
@@ -125,6 +117,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    /**
+     * ワープ後の画像サイズ内（例: 800x800）で、19x19の交点を完全に等間隔な算術計算で生成する
+     */
+    private fun createArithmeticGrid(width: Double, height: Double): Array<Array<Point>> {
+        // 碁盤は19路（18のインターバル）ですが、外側に半目分のマージン（計1マス分）を取って矩形化しているため、
+        // 画像全体を「19等分」して各交点を配置するのが幾何学的に正しくなります。
+        val stepX = width / 19.0
+        val stepY = height / 19.0
+
+        return Array(19) { r ->
+            Array(19) { c ->
+                // 端から半目分（stepの半分）オフセットした位置を中心とする
+                val x = (c + 0.5) * stepX
+                val y = (r + 0.5) * stepY
+                Point(x, y)
+            }
+        }
+    }
+
     fun processWithCorners(corners: List<Point>) {
         val src = lastSourceMat ?: return
 
@@ -132,47 +143,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 _uiState.update { it.copy(initialCorners = corners, isLoading = true) }
 
+                // 引数を元の正しい形 (src, corners) に修正
                 val rectifiedMat = BoardRectifier.rectify(src, corners)
-                val gridDetector = GridLineDetector()
-                val gray = Mat()
-                Imgproc.cvtColor(rectifiedMat, gray, Imgproc.COLOR_BGR2GRAY)
 
-                val horizontal = gridDetector.detectGridLines(gray, GridLineDetector.Axis.HORIZONTAL)
-                val vertical = gridDetector.detectGridLines(gray, GridLineDetector.Axis.VERTICAL)
+                // ワーピング後の画像の実際のサイズを基準に等間隔グリッドを生成
+                val geometryGrid = createArithmeticGrid(rectifiedMat.cols().toDouble(), rectifiedMat.rows().toDouble())
 
-                if (horizontal != null && vertical != null) {
-                    Log.d("MainViewModel", "罫線検出成功: H=${horizontal.spacing}, V=${vertical.spacing}")
+                // StoneDetector による石の判定実行
+                val stoneDetector = StoneDetector()
+                val stoneResult = stoneDetector.detectStones(rectifiedMat, geometryGrid)
+                val blackCount = stoneResult.sumOf { row -> row.count { it == StoneColor.BLACK } }
+                val whiteCount = stoneResult.sumOf { row -> row.count { it == StoneColor.WHITE } }
+                Log.d("StoneDetectorDebug", "検出結果 -> 黒石: $blackCount 個, 白石: $whiteCount 個")
 
-                    // 19×19 の交点グリッドを生成（余計な反転を削除し、正しい順序でマッピング）
-                    val geometryGrid = Array(19) { r ->
-                        Array(19) { c ->
-                            val x = vertical.positions.getOrNull(c) ?: 0.0
-                            val y = horizontal.positions.getOrNull(r) ?: 0.0
-                            Point(x, y)
-                        }
-                    }
-
-                    // StoneDetector による石の判定実行
-                    val stoneDetector = StoneDetector()
-                    val stoneResult = stoneDetector.detectStones(rectifiedMat, geometryGrid)
-                    val blackCount = stoneResult.sumOf { row -> row.count { it == StoneColor.BLACK } }
-                    val whiteCount = stoneResult.sumOf { row -> row.count { it == StoneColor.WHITE } }
-                    Log.d("StoneDetectorDebug", "検出結果 -> 黒石: $blackCount 個, 白石: $whiteCount 個")
-
-                    // 解析結果を UiState の boardLayout に反映
-                    _uiState.update { currentState ->
-                        currentState.copy(
-                            isLoading = false,
-                            boardLayout = stoneResult
-                        )
-                    }
-                    toastMessage = "碁盤の解析が完了しました"
-                } else {
-                    _uiState.update { it.copy(isLoading = false) }
-                    toastMessage = "罫線の検出に失敗しました"
+                // 解析結果を UiState の boardLayout に反映
+                _uiState.update { currentState ->
+                    currentState.copy(
+                        isLoading = false,
+                        boardLayout = stoneResult
+                    )
                 }
+                toastMessage = "碁盤の解析が完了しました"
 
-                gray.release()
                 rectifiedMat.release()
             } catch (e: Exception) {
                 _uiState.update { it.copy(isLoading = false) }
@@ -221,37 +213,93 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun rotateRight() {
-        Log.d("MainViewModelDebug", "rotateRight が呼ばれました")
         _uiState.update { currentState ->
             val size = currentState.gameRecord.boardSize
             try {
                 val rotated = List(size) { row -> List(size) { col -> currentState.boardLayout[size - 1 - col][row] } }
                 currentState.copy(boardLayout = rotated)
             } catch (e: Exception) {
-                Log.e("MainViewModelDebug", "rotateRight 内部でエラー発生", e)
                 currentState
             }
         }
     }
 
     fun rotateLeft() {
-        Log.d("MainViewModelDebug", "rotateLeft が呼ばれました")
         _uiState.update { currentState ->
             val size = currentState.gameRecord.boardSize
             try {
                 val rotated = List(size) { row -> List(size) { col -> currentState.boardLayout[col][size - 1 - row] } }
                 currentState.copy(boardLayout = rotated)
             } catch (e: Exception) {
-                Log.e("MainViewModelDebug", "rotateLeft 内部でエラー発生", e)
                 currentState
             }
         }
     }
 
-    // 既存の exportSgf を置き換え
+    private fun exportDatasetPair(
+        rectifiedMat: Mat,
+        edgeMat: Mat,
+        geometryGrid: Array<Array<Point>>,
+        boardLayout: List<List<StoneColor>>
+    ) {
+        try {
+            val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+            val baseDir = File(downloadsDir, "goban_dataset")
+            val gameId = "game_${System.currentTimeMillis()}"
+            val gameFolder = File(baseDir, gameId)
+            if (!gameFolder.exists()) {
+                gameFolder.mkdirs()
+            }
+
+            val csvFile = File(gameFolder, "labels.csv")
+            val writer = csvFile.bufferedWriter()
+            writer.append("filename_base,row,col,label\n")
+
+            val patchSize = 40
+
+            for (r in 0 until 19) {
+                for (c in 0 until 19) {
+                    val center = geometryGrid[r][c]
+                    val x = center.x.toInt()
+                    val y = center.y.toInt()
+
+                    val half = patchSize / 2
+                    val x1 = (x - half).coerceIn(0, rectifiedMat.cols() - patchSize)
+                    val y1 = (y - half).coerceIn(0, rectifiedMat.rows() - patchSize)
+                    val rect = Rect(x1, y1, patchSize, patchSize)
+
+                    if (rect.width > 0 && rect.height > 0) {
+                        val colorPatch = Mat(rectifiedMat, rect)
+                        val edgePatch = Mat(edgeMat, rect)
+
+                        val filenameBase = "r${r}_c${c}"
+                        val colorFile = File(gameFolder, "${filenameBase}_color.png")
+                        val edgeFile = File(gameFolder, "${filenameBase}_edge.png")
+
+                        org.opencv.imgcodecs.Imgcodecs.imwrite(colorFile.absolutePath, colorPatch)
+                        org.opencv.imgcodecs.Imgcodecs.imwrite(edgeFile.absolutePath, edgePatch)
+
+                        val labelNum = when (boardLayout[r][c]) {
+                            StoneColor.EMPTY -> 0
+                            StoneColor.BLACK -> 1
+                            StoneColor.WHITE -> 2
+                        }
+
+                        writer.append("$filenameBase,$r,$c,$labelNum\n")
+
+                        colorPatch.release()
+                        edgePatch.release()
+                    }
+                }
+            }
+            writer.close()
+        } catch (e: Exception) {
+            Log.e("DatasetExport", "データセット出力中にエラーが発生しました", e)
+        }
+    }
+
     fun exportSgf(context: android.content.Context, gameRecord: GameRecord, recipientEmail: String) {
         viewModelScope.launch {
-            // 1. メールアドレスを保存（デフォルトとして記憶）
             PreferencesManager.saveEmail(context, recipientEmail)
 
             val currentLayout = _uiState.value.boardLayout
@@ -275,37 +323,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             result.onSuccess { savedFile ->
                 var message = "保存完了: ${savedFile.name}"
 
-                // 2. メールアドレスが入力されている場合はメール送信（インテント起動）を行う
-                if (recipientEmail.isNotBlank()) {
-                    try {
-                        val uri = androidx.core.content.FileProvider.getUriForFile(
-                            context,
-                            "${context.packageName}.fileprovider",
-                            savedFile
-                        )
-                        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                            type = "application/x-go-sgf" // または "text/plain"
-                            putExtra(android.content.Intent.EXTRA_EMAIL, arrayOf(recipientEmail))
-                            putExtra(android.content.Intent.EXTRA_SUBJECT, "GobanReader SGF出力")
-                            putExtra(android.content.Intent.EXTRA_TEXT, "碁盤解析アプリからSGFファイルをお送りします。")
-                            putExtra(android.content.Intent.EXTRA_STREAM, uri)
-                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        // メーラー起動はメインスレッドで実行する必要があるため Context を使って投げる
-                        val chooser = android.content.Intent.createChooser(intent, "SGFファイルをメールで送信").apply {
-                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        context.startActivity(chooser)
-                        message += " & メール送信準備完了"
-                    } catch (e: Exception) {
-                        Log.e("MainViewModel", "メール起動失敗", e)
-                        message += " (メール起動に失敗しました)"
-                    }
-                }
+                try {
+                    val srcMat = lastSourceMat
+                    if (srcMat != null) {
+                        val corners = _uiState.value.initialCorners
+                        if (corners.size == 4) {
+                            // 引数を (srcMat, corners) の2つに修正
+                            val rectifiedMat = BoardRectifier.rectify(srcMat, corners)
+                            val geometryGrid = createArithmeticGrid(rectifiedMat.cols().toDouble(), rectifiedMat.rows().toDouble())
 
+                            val gray = Mat()
+                            Imgproc.cvtColor(rectifiedMat, gray, Imgproc.COLOR_BGR2GRAY)
+                            val blurred = Mat()
+                            Imgproc.GaussianBlur(gray, blurred, org.opencv.core.Size(5.0, 5.0), 0.0)
+                            val edgeMat = Mat()
+                            Imgproc.Canny(blurred, edgeMat, 50.0, 150.0)
+                            Imgproc.dilate(edgeMat, edgeMat, Mat(), Point(-1.0, -1.0), 2)
+
+                            exportDatasetPair(rectifiedMat, edgeMat, geometryGrid, currentLayout)
+
+                            blurred.release()
+                            edgeMat.release()
+                            gray.release()
+                            rectifiedMat.release()
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("GobanExport", "データセットのエクスポート中にエラーが発生しました", e)
+                }
+                
                 toastMessage = message
             }.onFailure {
-                toastMessage = "保存に失敗しました"
+                Log.e("MainViewModel", "SGFファイルの保存に失敗しました", it)
+                toastMessage = "保存に失敗しました: ${it.localizedMessage}"
             }
         }
     }
