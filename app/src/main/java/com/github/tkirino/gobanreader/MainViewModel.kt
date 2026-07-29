@@ -251,11 +251,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 gameFolder.mkdirs()
             }
 
-            val csvFile = File(gameFolder, "labels.csv")
-            val writer = csvFile.bufferedWriter()
-            writer.append("filename_base,row,col,label\n")
-
             val patchSize = 40
+
+            // CSVの中身をすべて保持するビルダー
+            val csvContent = StringBuilder()
+            csvContent.append("filename_base,row,col,label\n")
 
             for (r in 0 until 19) {
                 for (c in 0 until 19) {
@@ -285,14 +285,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             StoneColor.WHITE -> 2
                         }
 
-                        writer.append("$filenameBase,$r,$c,$labelNum\n")
+                        // 文字列としてバッファ（メモリ上のStringBuilder）に溜める
+                        csvContent.append("$filenameBase,$r,$c,$labelNum\n")
 
                         colorPatch.release()
                         edgePatch.release()
                     }
                 }
             }
-            writer.close()
+
+            // ループがすべて終わったあとに、一気にファイルへ書き込む（確実にディスクに保存される）
+            val csvFile = File(gameFolder, "labels.csv")
+            csvFile.writeText(csvContent.toString())
+
+            Log.d("DatasetExport", "labels.csv の書き込みが完了しました。サイズ: ${csvFile.length()} バイト")
+
         } catch (e: Exception) {
             Log.e("DatasetExport", "データセット出力中にエラーが発生しました", e)
         }
