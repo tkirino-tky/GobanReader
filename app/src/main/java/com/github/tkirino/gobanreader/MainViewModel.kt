@@ -117,23 +117,135 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    /**
-     * ワープ後の画像サイズ内（例: 800x800）で、19x19の交点を完全に等間隔な算術計算で生成する
-     */
-    private fun createArithmeticGrid(width: Double, height: Double): Array<Array<Point>> {
-        // 碁盤は19路（18のインターバル）ですが、外側に半目分のマージン（計1マス分）を取って矩形化しているため、
-        // 画像全体を「19等分」して各交点を配置するのが幾何学的に正しくなります。
+    private fun createArithmeticGrid(width: Double, height: Double, boardMat: Mat? = null): Array<Array<Point>> {
+        // 1. 基本ステップ幅の算出
         val stepX = width / 19.0
         val stepY = height / 19.0
 
+        // 2. 中央の交点（10路目、インデックス9）を基準点とする
+        val centerIndex = 9.0
+        val baseCenterX = (centerIndex + 0.5) * stepX
+        val baseCenterY = (centerIndex + 0.5) * stepY
+
+        // 3. ズレ（オフセット）の初期値
+        var offsetX = 0.0
+        var offsetY = 0.0
+
+        // 4. 画像データ（boardMat）が利用可能な場合、中央付近の空白交点をぐるりと探して微調整量を計算する
+        if (boardMat != null) {
+            val detectedOffset = estimateGridOffset(boardMat, stepX, stepY)
+            if (detectedOffset != null) {
+                offsetX = detectedOffset.first
+                offsetY = detectedOffset.second
+                Log.d("GridAdjustment", "検出されたオフセット -> offsetX: $offsetX, offsetY: $offsetY")
+            }
+        }
+
+        // 5. 中央を基準（インデックス9からの相対距離）として全19路の座標を生成
         return Array(19) { r ->
             Array(19) { c ->
-                // 端から半目分（stepの半分）オフセットした位置を中心とする
-                val x = (c + 0.5) * stepX
-                val y = (r + 0.5) * stepY
+                val x = baseCenterX + (c - centerIndex) * stepX + offsetX
+                val y = baseCenterY + (r - centerIndex) * stepY + offsetY
                 Point(x, y)
             }
         }
+    }
+
+    /**
+     * 中央付近から空いている交差点（十字）を探し、理論位置からのズレを検出する
+     */
+    private fun estimateGridOffset(boardMat: Mat, stepX: Double, stepY: Double): Pair<Double, Double>? {
+        // 中央の9,9を中心に、ぐるりと周辺の空白になりやすい候補を探索
+        val searchCenters = listOf(
+            Pair(9, 9), Pair(9, 8), Pair(8, 9), Pair(8, 8),
+            Pair(9, 10), Pair(10, 9), Pair(10, 10), Pair(8, 10), Pair(10, 8),
+            Pair(7, 9), Pair(9, 7), Pair(11, 9), Pair(9, 11)
+        )
+
+        val patchSize = 40 // 切り出すパッチのサイズ
+
+        for ((r, c) in searchCenters) {
+            val roughX = (c + 0.5) * stepX
+            val roughY = (r + 0.5) * stepY
+
+            val x = roughX.toInt()
+            val y = roughY.toInt()
+            val half = patchSize / 2
+            val x1 = (x - half).coerceIn(0, boardMat.cols() - patchSize)
+            val y1 = (y - half).coerceIn(0, boardMat.rows() - patchSize)
+            val rect = Rect(x1, y1, patchSize, patchSize)
+
+            if (rect.width == patchSize && rect.height == patchSize) {
+                val patch = Mat(boardMat, rect)
+                // パッチ内で十字線の本当の中心位置（最も暗い交点）を探す
+                val localOffset = findExactIntersectionInPatch(patch, patchSize)
+                patch.release()
+
+                if (localOffset != null) {
+                    // パッチ内座標から全体座標でのズレ（dx, dy）を計算
+                    val exactX = x1 + localOffset.first
+                    val exactY = y1 + localOffset.second
+                    val dx = exactX - roughX
+                    val dy = exactY - roughY
+
+                    // 妥当なズレの範囲内（ステップの30%以内）であれば採用
+                    if (Math.abs(dx) < stepX * 0.3 && Math.abs(dy) < stepY * 0.3) {
+                        return Pair(dx, dy)
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * 切り出したパッチ画像から、罫線の交点（十字の中心）の正確なローカル位置を特定する
+     */
+    private fun findExactIntersectionInPatch(patch: Mat, patchSize: Int): Pair<Double, Double>? {
+        val gray = Mat()
+        if (patch.channels() > 1) {
+            Imgproc.cvtColor(patch, gray, Imgproc.COLOR_BGR2GRAY)
+        } else {
+            patch.copyTo(gray)
+        }
+
+        // 縦方向・横方向の投影（プロファイル）を取ることで、線の中心（輝度が最も低くなるライン）を正確に見つける
+        val rowSum = DoubleArray(patchSize)
+        val colSum = DoubleArray(patchSize)
+
+        for (row in 0 until patchSize) {
+            for (col in 0 until patchSize) {
+                val intensity = gray.get(row, col)[0]
+                rowSum[row] += intensity
+                colSum[col] += intensity
+            }
+        }
+        gray.release()
+
+        // 最も暗い（線がある）インデックスを求める
+        var minX = -1.0
+        var minY = -1.0
+        var minRowVal = Double.MAX_VALUE
+        var minColVal = Double.MAX_VALUE
+
+        // 中央付近（パッチ全体の1/4〜3/4の範囲）で最も暗い位置を探索
+        val margin = patchSize / 4
+        for (i in margin until patchSize - margin) {
+            if (rowSum[i] < minRowVal) {
+                minRowVal = rowSum[i]
+                minY = i.toDouble()
+            }
+            if (colSum[i] < minColVal) {
+                minColVal = colSum[i]
+                minX = i.toDouble()
+            }
+        }
+
+        // 十字の交点として十分な濃さ（線）が検出できているか簡易チェック
+        if (minX >= 0 && minY >= 0) {
+            return Pair(minX, minY)
+        }
+        return null
     }
 
     fun processWithCorners(corners: List<Point>) {
