@@ -3,7 +3,7 @@ package com.github.tkirino.gobanreader.camera
 import android.Manifest
 import android.media.MediaActionSound
 import android.util.Log
-import androidx.camera.core.CameraSelector
+import android.util.Rational
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
@@ -15,18 +15,12 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -35,12 +29,12 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
-import android.util.Rational
 import java.io.File
 
 @OptIn(ExperimentalPermissionsApi::class)
@@ -56,6 +50,13 @@ fun CameraScreen(
     val imageCapture = remember { ImageCapture.Builder().build() }
     val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
 
+    val zoomManager = remember { CameraZoomManager(context) }
+    var currentZoom by remember { mutableStateOf(zoomManager.defaultZoomRatio) }
+    var cameraProviderRef by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+
+    // 端末がズーム（超広角等）をサポートしているかどうか
+    var isZoomSupported by remember { mutableStateOf(false) }
+
     LaunchedEffect(Unit) {
         if (!cameraPermissionState.status.isGranted) cameraPermissionState.launchPermissionRequest()
     }
@@ -69,6 +70,9 @@ fun CameraScreen(
                         val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
                         cameraProviderFuture.addListener({
                             val cameraProvider = cameraProviderFuture.get()
+                            cameraProviderRef = cameraProvider
+
+                            isZoomSupported = zoomManager.isZoomOutSupported(cameraProvider)
 
                             val viewPort = ViewPort.Builder(
                                 Rational(this.width, this.height),
@@ -84,13 +88,47 @@ fun CameraScreen(
                                 .build()
 
                             cameraProvider.unbindAll()
-                            cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, useCaseGroup)
+                            zoomManager.bindCameraWithZoom(
+                                cameraProvider,
+                                lifecycleOwner,
+                                useCaseGroup,
+                                currentZoom
+                            ) { _ -> }
                         }, ContextCompat.getMainExecutor(ctx))
+                    }
+                },
+                update = { previewView ->
+                    cameraProviderRef?.let { cameraProvider ->
+                        try {
+                            val viewPort = ViewPort.Builder(
+                                Rational(previewView.width, previewView.height),
+                                previewView.display.rotation
+                            ).build()
+
+                            val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
+
+                            val useCaseGroup = UseCaseGroup.Builder()
+                                .addUseCase(preview)
+                                .addUseCase(imageCapture)
+                                .setViewPort(viewPort)
+                                .build()
+
+                            cameraProvider.unbindAll()
+                            zoomManager.bindCameraWithZoom(
+                                cameraProvider,
+                                lifecycleOwner,
+                                useCaseGroup,
+                                currentZoom
+                            ) { _ -> }
+                        } catch (e: Exception) {
+                            Log.e("CameraScreen", "倍率変更時の再バインド失敗: ${e.message}")
+                        }
                     }
                 }
             )
         }
 
+        // 碁盤枠ガイド
         Box(
             modifier = Modifier
                 .fillMaxWidth(0.8f)
@@ -99,11 +137,44 @@ fun CameraScreen(
                 .border(2.dp, Color.White)
         )
 
+        // 戻るボタン
         Button(onClick = onBackClick, modifier = Modifier.align(Alignment.TopStart).padding(20.dp)) {
             Text("戻る")
         }
 
-        // シャッターボタン（標準カメラ風の二重リングデザイン）
+        // 倍率変更ボタン群：非対応端末でも表示しつつ、グレイアウト（操作無効）にする
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(20.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CameraZoomManager.SUPPORTED_ZOOMS.forEach { ratio ->
+                val isSelected = (currentZoom == ratio)
+                Button(
+                    onClick = {
+                        if (isZoomSupported) {
+                            currentZoom = ratio
+                            zoomManager.defaultZoomRatio = ratio
+                        }
+                    },
+                    enabled = isZoomSupported, // 非対応時は自動でグレイアウト＆タップ無効になる
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isSelected) Color.White else Color.Black.copy(alpha = 0.5f),
+                        contentColor = if (isSelected) Color.Black else Color.White,
+                        disabledContainerColor = Color.Gray.copy(alpha = 0.3f),
+                        disabledContentColor = Color.LightGray
+                    ),
+                    modifier = Modifier.size(44.dp),
+                    shape = CircleShape,
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text(text = "${ratio}x", fontSize = 12.sp)
+                }
+            }
+        }
+
+        // シャッターボタン
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -117,7 +188,6 @@ fun CameraScreen(
                             sound.play(MediaActionSound.SHUTTER_CLICK)
 
                             imageCapture.takePicture(outputOptions, ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageSavedCallback {
-                                val currentContext = context
                                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                                     onStartReadingClick(photoFile)
                                 }

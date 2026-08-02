@@ -27,6 +27,8 @@ import org.opencv.android.Utils
 import org.opencv.core.Mat
 import org.opencv.core.Point
 import org.opencv.core.Rect
+import org.opencv.core.Size
+import org.opencv.imgcodecs.Imgcodecs
 import org.opencv.imgproc.Imgproc
 import java.io.File
 
@@ -118,20 +120,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun createArithmeticGrid(width: Double, height: Double, boardMat: Mat? = null): Array<Array<Point>> {
-        // 1. 基本ステップ幅の算出
         val stepX = width / 19.0
         val stepY = height / 19.0
 
-        // 2. 中央の交点（10路目、インデックス9）を基準点とする
         val centerIndex = 9.0
         val baseCenterX = (centerIndex + 0.5) * stepX
         val baseCenterY = (centerIndex + 0.5) * stepY
 
-        // 3. ズレ（オフセット）の初期値
         var offsetX = 0.0
         var offsetY = 0.0
 
-        // 4. 画像データ（boardMat）が利用可能な場合、中央付近の空白交点をぐるりと探して微調整量を計算する
         if (boardMat != null) {
             val detectedOffset = estimateGridOffset(boardMat, stepX, stepY)
             if (detectedOffset != null) {
@@ -141,7 +139,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // 5. 中央を基準（インデックス9からの相対距離）として全19路の座標を生成
         return Array(19) { r ->
             Array(19) { c ->
                 val x = baseCenterX + (c - centerIndex) * stepX + offsetX
@@ -151,18 +148,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * 中央付近から空いている交差点（十字）を探し、理論位置からのズレを検出する
-     */
     private fun estimateGridOffset(boardMat: Mat, stepX: Double, stepY: Double): Pair<Double, Double>? {
-        // 中央の9,9を中心に、ぐるりと周辺の空白になりやすい候補を探索
         val searchCenters = listOf(
             Pair(9, 9), Pair(9, 8), Pair(8, 9), Pair(8, 8),
             Pair(9, 10), Pair(10, 9), Pair(10, 10), Pair(8, 10), Pair(10, 8),
             Pair(7, 9), Pair(9, 7), Pair(11, 9), Pair(9, 11)
         )
 
-        val patchSize = 40 // 切り出すパッチのサイズ
+        val patchSize = 40
 
         for ((r, c) in searchCenters) {
             val roughX = (c + 0.5) * stepX
@@ -177,18 +170,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             if (rect.width == patchSize && rect.height == patchSize) {
                 val patch = Mat(boardMat, rect)
-                // パッチ内で十字線の本当の中心位置（最も暗い交点）を探す
                 val localOffset = findExactIntersectionInPatch(patch, patchSize)
                 patch.release()
 
                 if (localOffset != null) {
-                    // パッチ内座標から全体座標でのズレ（dx, dy）を計算
                     val exactX = x1 + localOffset.first
                     val exactY = y1 + localOffset.second
                     val dx = exactX - roughX
                     val dy = exactY - roughY
 
-                    // 妥当なズレの範囲内（ステップの30%以内）であれば採用
                     if (Math.abs(dx) < stepX * 0.3 && Math.abs(dy) < stepY * 0.3) {
                         return Pair(dx, dy)
                     }
@@ -198,9 +188,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return null
     }
 
-    /**
-     * 切り出したパッチ画像から、罫線の交点（十字の中心）の正確なローカル位置を特定する
-     */
     private fun findExactIntersectionInPatch(patch: Mat, patchSize: Int): Pair<Double, Double>? {
         val gray = Mat()
         if (patch.channels() > 1) {
@@ -209,7 +196,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             patch.copyTo(gray)
         }
 
-        // 縦方向・横方向の投影（プロファイル）を取ることで、線の中心（輝度が最も低くなるライン）を正確に見つける
         val rowSum = DoubleArray(patchSize)
         val colSum = DoubleArray(patchSize)
 
@@ -222,13 +208,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         gray.release()
 
-        // 最も暗い（線がある）インデックスを求める
         var minX = -1.0
         var minY = -1.0
         var minRowVal = Double.MAX_VALUE
         var minColVal = Double.MAX_VALUE
 
-        // 中央付近（パッチ全体の1/4〜3/4の範囲）で最も暗い位置を探索
         val margin = patchSize / 4
         for (i in margin until patchSize - margin) {
             if (rowSum[i] < minRowVal) {
@@ -241,11 +225,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // 十字の交点として十分な濃さ（線）が検出できているか簡易チェック
         if (minX >= 0 && minY >= 0) {
             return Pair(minX, minY)
         }
         return null
+    }
+
+    /**
+     * 碁盤座標検出用の二値化画像を Download/Cropped_Rect に 256x256 で保存する関数
+     * （アノテーションCSVは出力しません。将来無効化する場合はこの関数の呼び出しをコメントアウトしてください）
+     */
+    private fun exportCroppedRectImage(srcMat: Mat) {
+        try {
+            val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+            val baseDir = File(downloadsDir, "Cropped_Rect")
+            val sampleId = "sample_${System.currentTimeMillis()}"
+            val sampleDir = File(baseDir, sampleId).apply {
+                if (!exists()) mkdirs()
+            }
+
+            val destImageFile = File(sampleDir, "board_binary.png")
+
+            // 必ず clone() を使用して元のMatを保護し、256x256にリサイズする
+            val clonedMat = srcMat.clone()
+            val resizedMat = Mat()
+            Imgproc.resize(clonedMat, resizedMat, Size(256.0, 256.0))
+
+            Imgcodecs.imwrite(destImageFile.absolutePath, resizedMat)
+
+            clonedMat.release()
+            resizedMat.release()
+
+            Log.d("CroppedRectExport", "二値化画像の保存成功: ${destImageFile.absolutePath}")
+        } catch (e: Exception) {
+            Log.e("CroppedRectExport", "二値化画像の保存中にエラーが発生しました", e)
+        }
     }
 
     fun processWithCorners(corners: List<Point>) {
@@ -255,20 +269,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 _uiState.update { it.copy(initialCorners = corners, isLoading = true) }
 
-                // 引数を元の正しい形 (src, corners) に修正
                 val rectifiedMat = BoardRectifier.rectify(src, corners)
-
-                // ワーピング後の画像の実際のサイズを基準に等間隔グリッドを生成
                 val geometryGrid = createArithmeticGrid(rectifiedMat.cols().toDouble(), rectifiedMat.rows().toDouble())
 
-                // StoneDetector による石の判定実行
+                // 碁盤座標検出用の二値化画像を生成・書き出し（必要に応じてここで呼び出しをコメントアウト可能です）
+                val gray = Mat()
+                Imgproc.cvtColor(rectifiedMat, gray, Imgproc.COLOR_BGR2GRAY)
+                val blurred = Mat()
+                Imgproc.GaussianBlur(gray, blurred, Size(5.0, 5.0), 0.0)
+                val edgeMat = Mat()
+                Imgproc.Canny(blurred, edgeMat, 50.0, 150.0)
+                Imgproc.dilate(edgeMat, edgeMat, Mat(), Point(-1.0, -1.0), 2)
+
+                // 二値化画像を 256x256 で Download/Cropped_Rect に出力
+                exportCroppedRectImage(edgeMat)
+
+                blurred.release()
+                edgeMat.release()
+                gray.release()
+
                 val stoneDetector = StoneDetector()
                 val stoneResult = stoneDetector.detectStones(rectifiedMat, geometryGrid)
                 val blackCount = stoneResult.sumOf { row -> row.count { it == StoneColor.BLACK } }
                 val whiteCount = stoneResult.sumOf { row -> row.count { it == StoneColor.WHITE } }
                 Log.d("StoneDetectorDebug", "検出結果 -> 黒石: $blackCount 個, 白石: $whiteCount 個")
 
-                // 解析結果を UiState の boardLayout に反映
                 _uiState.update { currentState ->
                     currentState.copy(
                         isLoading = false,
@@ -364,8 +389,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val patchSize = 40
-
-            // CSVの中身をすべて保持するビルダー
             val csvContent = StringBuilder()
             csvContent.append("filename_base,row,col,label\n")
 
@@ -388,8 +411,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val colorFile = File(gameFolder, "${filenameBase}_color.png")
                         val edgeFile = File(gameFolder, "${filenameBase}_edge.png")
 
-                        org.opencv.imgcodecs.Imgcodecs.imwrite(colorFile.absolutePath, colorPatch)
-                        org.opencv.imgcodecs.Imgcodecs.imwrite(edgeFile.absolutePath, edgePatch)
+                        Imgcodecs.imwrite(colorFile.absolutePath, colorPatch)
+                        Imgcodecs.imwrite(edgeFile.absolutePath, edgePatch)
 
                         val labelNum = when (boardLayout[r][c]) {
                             StoneColor.EMPTY -> 0
@@ -397,7 +420,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             StoneColor.WHITE -> 2
                         }
 
-                        // 文字列としてバッファ（メモリ上のStringBuilder）に溜める
                         csvContent.append("$filenameBase,$r,$c,$labelNum\n")
 
                         colorPatch.release()
@@ -406,7 +428,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            // ループがすべて終わったあとに、一気にファイルへ書き込む（確実にディスクに保存される）
             val csvFile = File(gameFolder, "labels.csv")
             csvFile.writeText(csvContent.toString())
 
@@ -447,14 +468,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (srcMat != null) {
                         val corners = _uiState.value.initialCorners
                         if (corners.size == 4) {
-                            // 引数を (srcMat, corners) の2つに修正
                             val rectifiedMat = BoardRectifier.rectify(srcMat, corners)
                             val geometryGrid = createArithmeticGrid(rectifiedMat.cols().toDouble(), rectifiedMat.rows().toDouble())
 
                             val gray = Mat()
                             Imgproc.cvtColor(rectifiedMat, gray, Imgproc.COLOR_BGR2GRAY)
                             val blurred = Mat()
-                            Imgproc.GaussianBlur(gray, blurred, org.opencv.core.Size(5.0, 5.0), 0.0)
+                            Imgproc.GaussianBlur(gray, blurred, Size(5.0, 5.0), 0.0)
                             val edgeMat = Mat()
                             Imgproc.Canny(blurred, edgeMat, 50.0, 150.0)
                             Imgproc.dilate(edgeMat, edgeMat, Mat(), Point(-1.0, -1.0), 2)
@@ -470,7 +490,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } catch (e: Exception) {
                     Log.e("GobanExport", "データセットのエクスポート中にエラーが発生しました", e)
                 }
-                
+
                 toastMessage = message
             }.onFailure {
                 Log.e("MainViewModel", "SGFファイルの保存に失敗しました", it)
