@@ -50,6 +50,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    // ★追加：Bluetoothシャッターが押されたことを検知・通知するためのトリガー
+    var remoteShutterTrigger by mutableStateOf(0)
+        private set
+
+    fun triggerRemoteShutter() {
+        remoteShutterTrigger++
+    }
+
     fun loadPhotoForAdjustment(file: File) {
         viewModelScope.launch(Dispatchers.Default) {
             val originalBitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath)

@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.github.tkirino.gobanreader.MainViewModel
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
@@ -40,6 +41,7 @@ import java.io.File
 @OptIn(ExperimentalPermissionsApi::class)
 @Composable
 fun CameraScreen(
+    viewModel: MainViewModel,
     onStartReadingClick: (File) -> Unit,
     onBackClick: () -> Unit
 ) {
@@ -56,6 +58,29 @@ fun CameraScreen(
 
     // 端末がズーム（超広角等）をサポートしているかどうか
     var isZoomSupported by remember { mutableStateOf(false) }
+
+    // 共通の撮影処理（画面シャッター・Bluetoothリモコン共用）
+    val takePhoto = {
+        val photoFile = File(context.cacheDir, "goban_photo.jpg")
+        val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
+        sound.play(MediaActionSound.SHUTTER_CLICK)
+
+        imageCapture.takePicture(outputOptions, ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageSavedCallback {
+            override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                onStartReadingClick(photoFile)
+            }
+            override fun onError(e: ImageCaptureException) {
+                Log.e("CameraScreen", "撮影失敗: ${e.message}")
+            }
+        })
+    }
+
+    // MainActivity経由でBluetoothシャッター（音量ボタン）が押されたことを検知する
+    LaunchedEffect(viewModel.remoteShutterTrigger) {
+        if (viewModel.remoteShutterTrigger > 0) {
+            takePhoto()
+        }
+    }
 
     LaunchedEffect(Unit) {
         if (!cameraPermissionState.status.isGranted) cameraPermissionState.launchPermissionRequest()
@@ -158,7 +183,7 @@ fun CameraScreen(
                             zoomManager.defaultZoomRatio = ratio
                         }
                     },
-                    enabled = isZoomSupported, // 非対応時は自動でグレイアウト＆タップ無効になる
+                    enabled = isZoomSupported,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (isSelected) Color.White else Color.Black.copy(alpha = 0.5f),
                         contentColor = if (isSelected) Color.Black else Color.White,
@@ -182,20 +207,7 @@ fun CameraScreen(
                 .size(80.dp)
                 .pointerInput(Unit) {
                     detectTapGestures(
-                        onTap = {
-                            val photoFile = File(context.cacheDir, "goban_photo.jpg")
-                            val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
-                            sound.play(MediaActionSound.SHUTTER_CLICK)
-
-                            imageCapture.takePicture(outputOptions, ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageSavedCallback {
-                                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                                    onStartReadingClick(photoFile)
-                                }
-                                override fun onError(e: ImageCaptureException) {
-                                    Log.e("CameraScreen", "撮影失敗: ${e.message}")
-                                }
-                            })
-                        }
+                        onTap = { takePhoto() }
                     )
                 },
             contentAlignment = Alignment.Center
