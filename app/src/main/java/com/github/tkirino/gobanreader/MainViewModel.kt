@@ -12,7 +12,7 @@ import com.github.tkirino.gobanreader.export.SgfWriter
 import com.github.tkirino.gobanreader.model.GameRecord
 import com.github.tkirino.gobanreader.model.ReaderUiState
 import com.github.tkirino.gobanreader.model.StoneColor
-import com.github.tkirino.gobanreader.stones.StoneDetector
+import com.github.tkirino.gobanreader.stones.CnnStoneDetector
 import com.github.tkirino.gobanreader.utility.GeometryUtils
 import com.github.tkirino.gobanreader.utility.PreferencesManager
 import com.github.tkirino.gobanreader.vision.BoardCornerDetector
@@ -271,7 +271,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun processWithCorners(corners: List<Point>) {
-        val src = lastSourceMat ?: return
+        val src = lastSourceMat?.clone() ?: return
 
         viewModelScope.launch(Dispatchers.Default) {
             try {
@@ -280,7 +280,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val rectifiedMat = BoardRectifier.rectify(src, corners)
                 val geometryGrid = createArithmeticGrid(rectifiedMat.cols().toDouble(), rectifiedMat.rows().toDouble())
 
-                // 碁盤座標検出用の二値化画像を生成・書き出し（必要に応じてここで呼び出しをコメントアウト可能です）
+                // 碁盤座標検出用の二値化画像を生成・書き出し
                 val gray = Mat()
                 Imgproc.cvtColor(rectifiedMat, gray, Imgproc.COLOR_BGR2GRAY)
                 val blurred = Mat()
@@ -293,11 +293,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 exportCroppedRectImage(edgeMat)
 
                 blurred.release()
-                edgeMat.release()
                 gray.release()
 
-                val stoneDetector = StoneDetector()
-                val stoneResult = stoneDetector.detectStones(rectifiedMat, geometryGrid)
+                // ★ CNNによる推論（edgeMatを消費する前にここで実行！）
+                val cnnDetector = CnnStoneDetector(getApplication())
+                val stoneResult = cnnDetector.detectStones(rectifiedMat, edgeMat, geometryGrid)
+
+                // 推論が終わったのでここで解放
+                edgeMat.release()
+
                 val blackCount = stoneResult.sumOf { row -> row.count { it == StoneColor.BLACK } }
                 val whiteCount = stoneResult.sumOf { row -> row.count { it == StoneColor.WHITE } }
                 Log.d("StoneDetectorDebug", "検出結果 -> 黒石: $blackCount 個, 白石: $whiteCount 個")

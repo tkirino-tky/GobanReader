@@ -1,3 +1,5 @@
+import org.gradle.kotlin.dsl.implementation
+
 plugins {alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
@@ -41,7 +43,16 @@ android {
     buildFeatures {
         compose = true
     }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true // 必要に応じて追加
+            pickFirsts.add("lib/**/libc++_shared.so")
+            // もし他のsoファイルで競合が出る場合はここに追記されます
+        }
+    }
 }
+
 kotlin {
     jvmToolchain(21)
 }
@@ -78,5 +89,9 @@ dependencies {
 
     // ★この1行を追加するだけでOpenCVが使えるようになります！
     implementation("org.opencv:opencv:4.10.0")
+
+    // PyTorch Android (Lite Interpreter)
+    implementation("org.pytorch:pytorch_android:2.1.0")
+    implementation("org.pytorch:pytorch_android_torchvision:2.1.0")
 }
 
