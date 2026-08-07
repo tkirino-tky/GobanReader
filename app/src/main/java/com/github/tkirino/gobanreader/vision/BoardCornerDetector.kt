@@ -1,13 +1,16 @@
 package com.github.tkirino.gobanreader.vision
 
 import android.content.Context
-import com.github.tkirino.gobanreader.utility.DebugUtility
+import android.os.Environment
+import android.util.Log
 import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
 import org.opencv.core.Size
+import org.opencv.imgcodecs.Imgcodecs
 import org.opencv.imgproc.Imgproc
+import java.io.File
 
 class BoardCornerDetector {
     // 戻り値用のデータクラス
@@ -33,7 +36,21 @@ class BoardCornerDetector {
         Imgproc.Canny(blurred, edged, 50.0, 150.0)
         Imgproc.dilate(edged, edged, Mat(), Point(-1.0, -1.0), 2)
 
-        DebugUtility.saveDebugImage(context, edged, "corner_edged")
+        // ==========================================
+        // 【臨時】碁盤位置検出用データ収集のための保存処理
+        // （データ収集完了後にこのブロックごと削除してください）
+        try {
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val baseDir = File(downloadsDir, "Cropped_Rect")
+            val sampleId = "sample_${System.currentTimeMillis()}"
+            val sampleDir = File(baseDir, sampleId).apply { if (!exists()) mkdirs() }
+            val destImageFile = File(sampleDir, "board_binary.png")
+            Imgcodecs.imwrite(destImageFile.absolutePath, edged)
+            Log.d("CroppedRectExport", "保存完了: ${destImageFile.absolutePath}")
+        } catch (e: Exception) {
+            Log.e("CroppedRectExport", "エラー", e)
+        }
+        // ==========================================
 
         // 3. 輪郭検出
         val contours = mutableListOf<MatOfPoint>()
@@ -70,7 +87,6 @@ class BoardCornerDetector {
     /**
      * 4つのコーナー座標を [左上, 右上, 右下, 左下] の順にソートするヘルパー関数
      */
-    /**/
     private fun sortCorners(corners: List<Point>): List<Point> {
         val sortedByY = corners.sortedBy { it.y }
         // 上側の2点と下側の2点に分ける

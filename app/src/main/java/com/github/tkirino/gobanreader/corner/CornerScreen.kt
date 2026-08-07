@@ -115,11 +115,6 @@ fun CornerScreen(
                     )
                 }
 
-                // Raw Detection (青い点)
-                rawDetection.forEach { point ->
-                    drawCircle(color = Color.Blue, radius = 20f, center = toOffset(point))
-                }
-
                 // 調整中の Corners (赤い十字デザイン)
                 val markerRadius = 25f
                 val crossHairLength = 40f

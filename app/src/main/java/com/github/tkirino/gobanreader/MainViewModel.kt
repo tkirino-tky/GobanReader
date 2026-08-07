@@ -185,21 +185,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return if (minX >= 0 && minY >= 0) Pair(minX, minY) else null
     }
 
-    private fun exportCroppedRectImage(srcMat: Mat) {
-        try {
-            val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-            val baseDir = File(downloadsDir, "Cropped_Rect")
-            val sampleId = "sample_${System.currentTimeMillis()}"
-            val sampleDir = File(baseDir, sampleId).apply { if (!exists()) mkdirs() }
-            val destImageFile = File(sampleDir, "board_binary.png")
-            val clonedMat = srcMat.clone()
-            val resizedMat = Mat()
-            Imgproc.resize(clonedMat, resizedMat, Size(256.0, 256.0))
-            Imgcodecs.imwrite(destImageFile.absolutePath, resizedMat)
-            clonedMat.release(); resizedMat.release()
-        } catch (e: Exception) { Log.e("CroppedRectExport", "エラー", e) }
-    }
-
     fun processWithCorners(corners: List<Point>) {
         val src = lastSourceMat?.clone() ?: run {
             Log.e("ProcessDebug", "lastSourceMat が null です")
