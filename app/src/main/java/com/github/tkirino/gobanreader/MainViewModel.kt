@@ -33,12 +33,18 @@ import org.opencv.imgproc.Imgproc
 import org.pytorch.LiteModuleLoader
 import java.io.File
 import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(ReaderUiState())
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
     var toastMessage by mutableStateOf<String?>(null)
     private var lastSourceMat: Mat? = null
+
+    // 撮影時から出力時までセッションIDを保持するための変数
+    private var currentSessionId: String? = null
 
     private var cnnCornerDetector: CnnCornerDetector? = null
 
@@ -92,6 +98,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
+            // 新しいセッションID（タイムスタンプ）をここで発行して保持
+            currentSessionId = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+
             val originalBitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
             val rotatedBitmap = rotateBitmapIfNeeded(file.absolutePath, originalBitmap)
 
@@ -100,6 +109,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Imgproc.cvtColor(fullSrc, fullSrc, Imgproc.COLOR_RGBA2BGR)
 
             val guideRect = GeometryUtils.calculateGuideRect(fullSrc.cols().toDouble(), fullSrc.rows().toDouble())
+
+            // ガイドフレームで切り出した生画像をここで保存
+            if (DebugConfig.EXPORT_ORIGINAL_BOARD_FOR_AUG) {
+                val croppedBoard = Mat(fullSrc, guideRect)
+                saveCroppedBoardWithSessionId(croppedBoard, currentSessionId!!)
+                croppedBoard.release()
+            }
+
             val cnnResult = detector.detectCorners(fullSrc, guideRect)
 
             val detectedCorners = if (cnnResult.found && cnnResult.corners.size == 4) {
@@ -256,33 +273,58 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(gameRecord = record, boardLayout = matrix.map { it.toList() }) }
     }
 
-    private fun exportDatasetPair(rectifiedMat: Mat, edgeMat: Mat, geometryGrid: Array<Array<org.opencv.core.Point>>, boardLayout: List<List<StoneColor>>) {
+    /**
+     * 19x19の盤面データ全体を labels.csv として、
+     * 確認用SGFを board.sgf として YOLO_Boards/<sessionId>/ 内に書き出す
+     */
+    private fun exportDatasetPair(boardLayout: List<List<StoneColor>>, gameRecord: GameRecord, context: android.content.Context) {
         try {
+            val sessionId = currentSessionId ?: return
             val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-            val baseDir = File(downloadsDir, "goban_dataset")
-            val gameId = "game_${System.currentTimeMillis()}"
-            val gameFolder = File(baseDir, gameId)
+            val baseDir = File(downloadsDir, "YOLO_Boards")
+            val gameFolder = File(baseDir, sessionId)
             if (!gameFolder.exists()) gameFolder.mkdirs()
 
-            val patchSize = 40
-            val csvContent = StringBuilder("filename_base,row,col,label\n")
-
+            // 1. labels.csv の書き出し
+            val csvContent = StringBuilder("row,col,label\n")
             for (r in 0 until 19) {
                 for (c in 0 until 19) {
-                    val center = geometryGrid[r][c]
-                    val rect = Rect((center.x - patchSize / 2).toInt().coerceIn(0, rectifiedMat.cols() - patchSize), (center.y - patchSize / 2).toInt().coerceIn(0, rectifiedMat.rows() - patchSize), patchSize, patchSize)
-                    val colorPatch = Mat(rectifiedMat, rect)
-                    val edgePatch = Mat(edgeMat, rect)
-                    val filenameBase = "r${r}_c${c}"
-                    Imgcodecs.imwrite(File(gameFolder, "${filenameBase}_color.png").absolutePath, colorPatch)
-                    Imgcodecs.imwrite(File(gameFolder, "${filenameBase}_edge.png").absolutePath, edgePatch)
-                    val labelNum = when (boardLayout[r][c]) { StoneColor.EMPTY -> 0; StoneColor.BLACK -> 1; StoneColor.WHITE -> 2 }
-                    csvContent.append("$filenameBase,$r,$c,$labelNum\n")
-                    colorPatch.release(); edgePatch.release()
+                    val labelNum = when (boardLayout[r][c]) {
+                        StoneColor.EMPTY -> 0
+                        StoneColor.BLACK -> 1
+                        StoneColor.WHITE -> 2
+                    }
+                    csvContent.append("$r,$c,$labelNum\n")
                 }
             }
             File(gameFolder, "labels.csv").writeText(csvContent.toString())
-        } catch (e: Exception) { Log.e("DatasetExport", "エラー", e) }
+
+            // 2. 確認用の board.sgf の書き出し
+            val blackStones = mutableListOf<Pair<Int, Int>>()
+            val whiteStones = mutableListOf<Pair<Int, Int>>()
+
+            for (r in 0 until 19) {
+                for (c in 0 until 19) {
+                    when (boardLayout[r][c]) {
+                        StoneColor.BLACK -> blackStones.add(Pair(c, r))
+                        StoneColor.WHITE -> whiteStones.add(Pair(c, r))
+                        else -> {}
+                    }
+                }
+            }
+
+            val updatedGameRecord = gameRecord.copy(
+                initialBlackStones = blackStones,
+                initialWhiteStones = whiteStones
+            )
+
+            val sgfWriter = SgfWriter(context)
+            val sgfString = sgfWriter.generateSgfString(updatedGameRecord)
+            File(gameFolder, "board.sgf").writeText(sgfString)
+
+        } catch (e: Exception) {
+            Log.e("DatasetExport", "エラー", e)
+        }
     }
 
     fun exportSgf(context: android.content.Context, gameRecord: GameRecord, recipientEmail: String, onFileSaved: (File) -> Unit) {
@@ -314,19 +356,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             result.onSuccess { savedFile ->
                 if (DebugConfig.isEnabled && DebugConfig.EXPORT_DATASET_PAIR) {
-                    lastSourceMat?.let { src ->
-                        val corners = _uiState.value.initialCorners
-                        if (corners.size == 4) {
-                            val rectifiedMat = BoardRectifier.rectify(src, corners)
-                            val grid = createArithmeticGrid(rectifiedMat.cols().toDouble(), rectifiedMat.rows().toDouble())
-                            cnnCornerDetector?.let { detector ->
-                                val edgeMat = detector.generateEdgeImage(rectifiedMat)
-                                exportDatasetPair(rectifiedMat, edgeMat, grid, currentLayout)
-                                edgeMat.release()
-                            }
-                            rectifiedMat.release()
-                        }
-                    }
+                    // 同じセッションIDを利用して labels.csv と board.sgf を出力
+                    exportDatasetPair(currentLayout, updatedGameRecord, context)
                 }
                 if (recipientEmail.isNotBlank()) onFileSaved(savedFile)
             }
@@ -346,12 +377,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) { Log.e("CroppedRectExport", "エラー", e) }
         }
 
-        fun saveCroppedBoardToDownload(mat: Mat) {
-            if (!DebugConfig.EXPORT_ORIGINAL_BOARD_FOR_AUG) return
+        /**
+         * 最初に撮影した生画像をガイドフレームで切り取ったものを受け取り、
+         * YOLO_Boards/<sessionId>/board_orig.png として保存する
+         */
+        fun saveCroppedBoardWithSessionId(mat: Mat, sessionId: String) {
             try {
-                val baseDir = File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), "Original_Boards")
-                if (!baseDir.exists()) {
-                    baseDir.mkdirs()
+                val baseDir = File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), "YOLO_Boards")
+                val sampleDir = File(baseDir, sessionId)
+                if (!sampleDir.exists()) {
+                    sampleDir.mkdirs()
                 }
 
                 val rgbMat = Mat()
@@ -367,9 +402,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 org.opencv.android.Utils.matToBitmap(rgbMat, bmp)
                 rgbMat.release()
 
-                val filename = "board_orig_${System.currentTimeMillis()}.png"
-                val file = File(baseDir, filename)
-
+                val file = File(sampleDir, "board_orig.png")
                 FileOutputStream(file).use { stream ->
                     bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, stream)
                 }
@@ -377,6 +410,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 Log.e("OriginalBoardExport", "エラー", e)
             }
+        }
+
+        @Deprecated("Replaced by saveCroppedBoardWithSessionId")
+        fun saveCroppedBoardToDownload(mat: Mat) {
+            // 互換性のためのプレースホルダー
         }
     }
 
